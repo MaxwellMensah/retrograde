@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-app = FastAPI(title="Project #Retrograde - Grading Checker")
+app = FastAPI(title="ProjectRetro - Grading Checker")
 
 # Setup template rendering for your 3-page frontend
 templates = Jinja2Templates(directory="templates")
