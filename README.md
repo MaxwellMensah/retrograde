@@ -1,4 +1,4 @@
-# 🎓 Project #Retrograde — Academic Performance Portal
+# Retrograde — Academic Performance Portal
 
 A high-availability candidate performance verification and grading portal engineered with **FastAPI**, **Tailwind CSS**, and modern Apple-style liquid-glass UI components.
 
