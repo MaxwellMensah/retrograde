@@ -1,5 +1,3 @@
-Here is a clean, professional `README.md` template tailored for your **#Retrograde** project structure (`app.py`, `templates/`, `requirements.txt`). You can copy and paste this directly into your GitHub repository's `README.md` file:
-
 ```markdown
 # 🎓 Project #Retrograde — Academic Performance Portal
 
