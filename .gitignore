@@ -1,11 +1,28 @@
+# Local environments & Python caches
 venv/
 __pycache__/
 *.pyc
+*.so
+*.zip
+
+# Terraform local directories and state
 .terraform/
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
-.json
-.so
+
+# Credential and variable files
+*.tfvars
+*.tfvars.json
+
+# Crash logs
+crash.log
+crash.web.log
+
+# IDE and OS files
+.vscode/
+.idea/
 .DS_Store
-*.zip
+
+# Local AWS CLI or build directories
 /aws
