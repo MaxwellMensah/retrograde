@@ -467,7 +467,7 @@ class SessionPayload(BaseModel):
 # 3. Route to serve the 3-page UI
 @app.get("/", response_class=HTMLResponse)
 def serve_frontend(request: Request):
-    return templates.TemplateResponse(request, "retro_test.html", {})
+    return templates.TemplateResponse(request, "index.html", {})
 
 
 # 4. Login Endpoint (Triggers traffic counter)
