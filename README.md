@@ -18,13 +18,12 @@ AWS environment is built from code with **Terraform**: one command to create it,
 7. [AWS services: what each does and why we need it](#-aws-services-what-each-does-and-why-we-need-it)
 8. [Terraform: building it all with one command](#-terraform-building-it-all-with-one-command)
 9. [The service lifecycle, phase by phase](#-the-service-lifecycle-phase-by-phase)
-10. [Presentation-day runbook](#-presentation-day-runbook)
-11. [Local development](#-local-development)
-12. [Configuration reference](#-configuration-reference)
-13. [Demo accounts](#-presentation-demo-accounts)
-14. [Troubleshooting](#-troubleshooting)
-15. [Security notes and known limits](#-security-notes-and-known-limits)
-16. [License](#-license)
+10. [Local development](#-local-development)
+11. [Configuration reference](#-configuration-reference)
+12. [Demo accounts](#-presentation-demo-accounts)
+13. [Troubleshooting](#-troubleshooting)
+14. [Security notes and known limits](#-security-notes-and-known-limits)
+15. [License](#-license)
 
 ---
 
