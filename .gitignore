@@ -26,3 +26,12 @@ crash.web.log
 
 # Local AWS CLI or build directories
 /aws
+
+# Local Terraform files
+**/.terraform/
+*.tfplan
+terraform_old/
+
+# Private keys
+*.pem
+*.key
