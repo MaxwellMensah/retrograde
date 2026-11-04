@@ -1,10 +1,13 @@
-name: "CI - Python & Terraform Validation"
+name: "Retrograde - Validate and Deploy"
 
 on:
   push:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
+
+permissions:
+  contents: read
 
 jobs:
   validate-python:
@@ -13,23 +16,25 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f retrograde/requirements.txt ]; then pip install -r retrograde/requirements.txt; fi
+          python -m pip install -r requirements.txt
           pip install flake8
 
       # Basic syntax check to ensure python files aren't broken
       - name: Lint with flake8
         run: |
           # stop the build if there are Python syntax errors or undefined names
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --extend-exclude=venv,.venv,.venv311,.terraform --count --select=E9,F63,F7,F82 --show-source --statistics
 
   validate-terraform:
     name: "Validate Terraform"
@@ -37,19 +42,164 @@ jobs:
     defaults:
       run:
         shell: bash
+        working-directory: terraform
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -backend=false -input=false
 
       - name: Terraform Format
-        run: terraform fmt -check
+        run: terraform fmt -check -recursive
 
       - name: Terraform Validate
         run: terraform validate
+
+  deploy:
+    name: "Deploy to EC2 after validation"
+    needs: [validate-python, validate-terraform]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: retrograde-ec2-main
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      EC2_HOST: ${{ vars.EC2_HOST }}
+      EC2_USER: ec2-user
+      EC2_SSH_SG_ID: ${{ vars.EC2_SSH_SG_ID }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate deployment inputs
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test -n "$EC2_HOST"
+          test -n "$EC2_SSH_SG_ID"
+          test -n "$ROLE_ARN"
+          bash -n scripts/deploy.sh scripts/deploy-remote.sh
+
+      - name: Get temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Allow SSH only from this runner
+        id: ingress
+        run: |
+          set -euo pipefail
+          RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
+          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
+          RULE_ID=$(aws ec2 authorize-security-group-ingress \
+            --group-id "$EC2_SSH_SG_ID" \
+            --protocol tcp --port 22 --cidr "$RUNNER_IP/32" \
+            --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text)
+          echo "rule_id=$RULE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare verified SSH credentials
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/retrograde_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/retrograde_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: SSH into EC2 and pull latest main
+        env:
+          GH_READ_TOKEN: ${{ github.token }}
+        run: bash scripts/deploy.sh
+
+      - name: Remove temporary SSH access
+        if: always() && steps.ingress.outputs.rule_id != ''
+        env:
+          RULE_ID: ${{ steps.ingress.outputs.rule_id }}
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "$EC2_SSH_SG_ID" --security-group-rule-ids "$RULE_ID"
+
+      - name: Delete runner SSH key
+        if: always()
+        run: rm -f "$HOME/.ssh/retrograde_deploy"
+
+
+
+
+
+# name: "CI - Python & Terraform Validation"
+
+# on:
+#   push:
+#     branches: [ "main", "master" ]
+#   pull_request:
+#     branches: [ "main", "master" ]
+
+# jobs:
+#   validate-python:
+#     name: "Lint & Check Python"
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: '3.10'
+
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           if [ -f retrograde/requirements.txt ]; then pip install -r retrograde/requirements.txt; fi
+#           pip install flake8
+
+#       # Basic syntax check to ensure python files aren't broken
+#       - name: Lint with flake8
+#         run: |
+#           # stop the build if there are Python syntax errors or undefined names
+#           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+#   validate-terraform:
+#     name: "Validate Terraform"
+#     runs-on: ubuntu-latest
+#     defaults:
+#       run:
+#         shell: bash
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Setup Terraform
+#         uses: hashicorp/setup-terraform@v3
+
+#       - name: Terraform Init
+#         run: terraform init
+
+#       - name: Terraform Format
+#         run: terraform fmt -check
+
+#       - name: Terraform Validate
+#         run: terraform validate
