@@ -18,13 +18,12 @@ AWS environment is built from code with **Terraform**: one command to create it,
 7. [AWS services: what each does and why we need it](#-aws-services-what-each-does-and-why-we-need-it)
 8. [Terraform: building it all with one command](#-terraform-building-it-all-with-one-command)
 9. [The service lifecycle, phase by phase](#-the-service-lifecycle-phase-by-phase)
-10. [Presentation-day runbook](#-presentation-day-runbook)
-11. [Local development](#-local-development)
-12. [Configuration reference](#-configuration-reference)
-13. [Demo accounts](#-presentation-demo-accounts)
-14. [Troubleshooting](#-troubleshooting)
-15. [Security notes and known limits](#-security-notes-and-known-limits)
-16. [License](#-license)
+10. [Local development](#-local-development)
+11. [Configuration reference](#-configuration-reference)
+12. [Demo accounts](#-presentation-demo-accounts)
+13. [Troubleshooting](#-troubleshooting)
+14. [Security notes and known limits](#-security-notes-and-known-limits)
+15. [License](#-license)
 
 ---
 
@@ -123,7 +122,7 @@ watches (the count of signed-in users), because AWS cannot see logins on its own
 retrograde/
 ├── .github/workflows/     # CI: validates the Python and the Terraform on every push / pull request
 ├── templates/
-│   └── retro_test.html    # the whole frontend: home, sign-in, results, About & Contact (served by FastAPI)
+│   └── index.html    # the whole frontend: home, sign-in, results, About & Contact (served by FastAPI)
 ├── terraform/             # infrastructure as code: one `apply` builds the AWS environment
 │   ├── main.tf            #   every AWS resource
 │   ├── variables.tf       #   the settings you can change
@@ -143,7 +142,7 @@ retrograde/
 
 ### Frontend
 
-One page (`templates/retro_test.html`) switches between four views without reloading:
+One page (`templates/index.html`) switches between four views without reloading:
 
 | View | What it shows |
 |---|---|
@@ -261,7 +260,7 @@ resources.
 | An AWS account and credentials | `aws sts get-caller-identity` prints your account |
 | Terraform 1.5 or newer | `terraform version` |
 | An existing VPC tagged `Name = mygroupvpc` with **public** subnets in at least 2 zones | or pass `-var 'subnet_ids=["subnet-aaa","subnet-bbb"]'` |
-| The latest `app.py` and `templates/retro_test.html` in the repo root | Terraform uploads them to S3 |
+| The latest `app.py` and `templates/index.html` in the repo root | Terraform uploads them to S3 |
 | Python 3 (only for the `simulate_logins.py` demo script) | `python3 --version` |
 
 ### Quick start
@@ -394,7 +393,7 @@ classes the page has not used before, rebuild the stylesheet and replace the inl
 
 ```bash
 echo '@tailwind base;@tailwind components;@tailwind utilities;' > input.css
-npx tailwindcss@3.4.17 -i input.css --content templates/retro_test.html --minify -o tailwind.min.css
+npx tailwindcss@3.4.17 -i input.css --content templates/index.html --minify -o tailwind.min.css
 ```
 
 **Simulating traffic locally or on AWS:**
