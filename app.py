@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -277,7 +278,11 @@ async def lifespan(app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="Project #Retrograde - Grading Checker", lifespan=lifespan)
+app = FastAPI(title="Project Retrograde - Grading Checker", lifespan=lifespan)
+
+# Mount the static folder so FastAPI can serve CSS, JS, and images locally
+app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/images", StaticFiles(directory="images"), name="images")
 
 # Setup template rendering for your 3-page frontend
 templates = Jinja2Templates(directory="templates")
