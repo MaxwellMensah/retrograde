@@ -1,0 +1,131 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/retrograde-bootstrap.log) 2>&1
+trap 'echo "Bootstrap failed at line $LINENO"' ERR
+
+# Deployment fingerprint: ${release_hash}
+export AWS_DEFAULT_REGION='${region}'
+BUCKET_NAME='${bucket}'
+
+retry() {
+  local attempt
+  for attempt in $(seq 1 12); do
+    if "$@"; then return 0; fi
+    sleep 5
+  done
+  return 1
+}
+
+retry dnf install -y python3.11 python3.11-pip nginx
+if ! command -v aws >/dev/null 2>&1; then
+  retry dnf install -y awscli-2
+fi
+
+# Discover the existing ASG name at boot, avoiding a Terraform dependency cycle.
+TOKEN=$(curl -fsS --retry 5 --connect-timeout 3 -X PUT \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' \
+  http://169.254.169.254/latest/api/token)
+INSTANCE_ID=$(curl -fsS --connect-timeout 3 \
+  -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/instance-id)
+find_asg() {
+  ASG_NAME=$(aws autoscaling describe-auto-scaling-instances \
+    --instance-ids "$INSTANCE_ID" \
+    --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text) || return 1
+  test -n "$ASG_NAME" && test "$ASG_NAME" != None
+}
+retry find_asg
+
+mkdir -p /opt/retrograde/{templates,static,images}
+retry aws s3 cp "s3://$BUCKET_NAME/app/app.py" /opt/retrograde/app.py
+retry aws s3 cp "s3://$BUCKET_NAME/app/requirements.txt" /opt/retrograde/requirements.txt
+retry aws s3 sync "s3://$BUCKET_NAME/app/templates/" /opt/retrograde/templates/
+retry aws s3 sync "s3://$BUCKET_NAME/static/" /opt/retrograde/static/
+retry aws s3 sync "s3://$BUCKET_NAME/images/" /opt/retrograde/images/
+test -s /opt/retrograde/templates/index.html
+
+cd /opt/retrograde
+python3.11 -m venv .venv
+retry .venv/bin/python -m pip install -r requirements.txt
+retry .venv/bin/python -m pip install uvicorn boto3
+.venv/bin/python -m pip check
+
+id retrograde >/dev/null 2>&1 || useradd --system --home-dir /opt/retrograde --shell /sbin/nologin retrograde
+chown -R retrograde:retrograde /opt/retrograde
+
+cat > /etc/retrograde.env <<ENV_CONF
+AWS_DEFAULT_REGION=${region}
+AWS_REGION=${region}
+ASG_NAME=$ASG_NAME
+CW_NAMESPACE=Retrograde/Portal
+CW_PUBLISH=true
+SCALE_THRESHOLD=${threshold}
+ENV_CONF
+chmod 600 /etc/retrograde.env
+
+cat > /etc/systemd/system/retrograde.service <<'SERVICE_CONF'
+[Unit]
+Description=Retrograde FastAPI application
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=retrograde
+Group=retrograde
+WorkingDirectory=/opt/retrograde
+EnvironmentFile=/etc/retrograde.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/retrograde/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_CONF
+
+# Own the complete config; do not include the packaged default server.
+cp -a /etc/nginx/nginx.conf /etc/nginx/nginx.conf.before-retrograde
+cat > /etc/nginx/nginx.conf <<'NGINX_CONF'
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    access_log /var/log/nginx/access.log;
+    sendfile on;
+
+    server {
+        listen 80 default_server;
+        server_name _;
+
+        location / {
+            proxy_pass http://127.0.0.1:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            # CloudFront redirects viewers to HTTPS; the ALB origin uses HTTP.
+            proxy_set_header X-Forwarded-Proto https;
+        }
+    }
+}
+NGINX_CONF
+
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = Enforcing ]; then
+  setsebool -P httpd_can_network_connect 1
+fi
+systemctl daemon-reload
+systemctl enable --now retrograde
+retry curl -fsS http://127.0.0.1:8000/health
+# Also verify template rendering, not only process health.
+retry curl -fsS -o /dev/null http://127.0.0.1:8000/
+nginx -t
+systemctl enable nginx
+systemctl restart nginx
+curl -fsS http://127.0.0.1/health
