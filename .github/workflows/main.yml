@@ -74,8 +74,6 @@ jobs:
     timeout-minutes: 20
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      # Set your S3 bucket name here (or use a GitHub Repository Variable named S3_BUCKET_NAME)
-      S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME || 'YOUR-TERRAFORM-S3-BUCKET-NAME' }}
       ASG_NAME: ${{ vars.ASG_NAME || 'retrograde-asg' }}
 
     steps:
@@ -92,10 +90,22 @@ jobs:
 
       - name: Upload Application Files to S3
         run: |
-          echo "Syncing code to s3://$S3_BUCKET_NAME..."
-          aws s3 cp app.py s3://$S3_BUCKET_NAME/app.py
-          aws s3 sync static/ s3://$S3_BUCKET_NAME/static/
-          aws s3 sync templates/ s3://$S3_BUCKET_NAME/templates/
+          set -euo pipefail
+          
+          # Automatically discover the S3 bucket starting with 'retrograde'
+          S3_BUCKET=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'retrograde')].Name | [0]" --output text)
+          
+          if [ -z "$S3_BUCKET" ] || [ "$S3_BUCKET" == "None" ]; then
+            echo "Error: Could not automatically locate the Retrograde S3 bucket."
+            exit 1
+          fi
+          
+          echo "Successfully discovered S3 bucket: $S3_BUCKET"
+          
+          # Sync files using the dynamically found bucket name
+          aws s3 cp app.py s3://$S3_BUCKET/app.py
+          aws s3 sync static/ s3://$S3_BUCKET/static/
+          aws s3 sync templates/ s3://$S3_BUCKET/templates/
 
       - name: Trigger Auto Scaling Group Instance Refresh
         run: |
