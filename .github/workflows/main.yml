@@ -120,16 +120,17 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Auto-discover or validate EC2_SSH_SG_ID so stale IDs never break deployment
-          SG_ID="${EC2_SSH_SG_ID:-}"
-          if [ -z "$SG_ID" ] || ! aws ec2 describe-security-groups --group-ids "$SG_ID" >/dev/null 2>&1; then
-            echo "Configured EC2_SSH_SG_ID is empty or stale. Discovering web security group automatically..."
-            SG_ID=$(aws ec2 describe-security-groups \
-              --filters "Name=group-name,Values=*-web-sg" \
-              --query "SecurityGroups[0].GroupId" \
-              --output text)
-            echo "Discovered active Security Group ID: $SG_ID"
+          # Discover security group dynamically by its Name tag
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=tag:Name,Values=retrograde-web-sg" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text)
+            
+          if [ -z "$SG_ID" ] || [ "$SG_ID" = "None" ]; then
+            echo "Error: Could not discover security group dynamically!"
+            exit 1
           fi
+          echo "Discovered active Security Group ID: $SG_ID"
 
           RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
           python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
