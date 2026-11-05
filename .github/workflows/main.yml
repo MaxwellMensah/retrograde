@@ -30,10 +30,8 @@ jobs:
           python -m pip install -r requirements.txt
           pip install flake8
 
-      # Basic syntax check to ensure python files aren't broken
       - name: Lint with flake8
         run: |
-          # stop the build if there are Python syntax errors or undefined names
           flake8 . --extend-exclude=venv,.venv,.venv311,.terraform --count --select=E9,F63,F7,F82 --show-source --statistics
 
   validate-terraform:
@@ -63,7 +61,7 @@ jobs:
         run: terraform validate
 
   deploy:
-    name: "Deploy to EC2 after validation"
+    name: "Deploy to AWS S3 & Refresh ASG"
     needs: [validate-python, validate-terraform]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -76,116 +74,32 @@ jobs:
     timeout-minutes: 20
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      EC2_HOST: ${{ vars.EC2_HOST }}
-      EC2_USER: ec2-user
-      EC2_APP_SG_NAME: ${{ vars.EC2_APP_SG_NAME || 'retrograde-web-sg' }}
+      # Set your S3 bucket name here (or use a GitHub Repository Variable named S3_BUCKET_NAME)
+      S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME || 'YOUR-TERRAFORM-S3-BUCKET-NAME' }}
+      ASG_NAME: ${{ vars.ASG_NAME || 'retrograde-asg' }}
 
     steps:
-      - name: Check out main
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Validate deployment inputs
-        env:
-          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          test -n "$EC2_HOST"
-          test -n "$ROLE_ARN"
-          bash -n scripts/deploy.sh scripts/deploy-remote.sh
-
-      - name: Show AWS login identity
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const token = await core.getIDToken('sts.amazonaws.com');
-            const claims = JSON.parse(
-              Buffer.from(token.split('.')[1], 'base64url').toString()
-            );
-            core.info(JSON.stringify({
-              sub: claims.sub,
-              aud: claims.aud,
-              iss: claims.iss
-            }, null, 2));
-
-      - name: Get temporary AWS credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Resolve and verify deployment target
-        id: target
-        run: python3 scripts/resolve-deployment-target.py
-
-      - name: Prepare verified SSH credentials
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+      - name: Upload Application Files to S3
         run: |
-          set -euo pipefail
-          test -n "$SSH_PRIVATE_KEY"
-          test -n "$SSH_KNOWN_HOSTS"
-          install -m 700 -d "$HOME/.ssh"
-          
-          python3 -c '
-          import os, sys
-          raw_key = os.environ.get("SSH_PRIVATE_KEY", "")
-          if not raw_key.strip():
-              print("Error: SSH_PRIVATE_KEY is empty!")
-              sys.exit(1)
-          
-          key = raw_key.replace("\r\n", "\n").strip()
-          if key.startswith("\"") and key.endswith("\""):
-              key = key[1:-1].strip()
-          
-          
-          with open(os.path.expanduser("~/.ssh/retrograde_deploy"), "w") as f:
-              f.write(key + "\n")
-          '
-          
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/retrograde_deploy" "$HOME/.ssh/known_hosts"
-          ssh-keygen -y -P '' -f "$HOME/.ssh/retrograde_deploy" > /dev/null
-          ssh-keygen -F "$EC2_HOST" -f "$HOME/.ssh/known_hosts" > /dev/null || {
-            echo "No verified known_hosts entry for EC2_HOST. Update EC2_SSH_KNOWN_HOSTS from a trusted source."
-            exit 1
-          }
+          echo "Syncing code to s3://$S3_BUCKET_NAME..."
+          aws s3 cp app.py s3://$S3_BUCKET_NAME/app.py
+          aws s3 sync static/ s3://$S3_BUCKET_NAME/static/
+          aws s3 sync templates/ s3://$S3_BUCKET_NAME/templates/
 
-      - name: Allow SSH only from this runner
-        id: ingress
-        env:
-          SG_ID: ${{ steps.target.outputs.sg_id }}
+      - name: Trigger Auto Scaling Group Instance Refresh
         run: |
-          set -euo pipefail
-          
-          RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
-          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
-          
-          RULE_ID=$(aws ec2 authorize-security-group-ingress \
-            --group-id "$SG_ID" \
-            --protocol tcp --port 22 --cidr "$RUNNER_IP/32" \
-            --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text)
-          
-          [[ "$RULE_ID" =~ ^sgr-[0-9a-f]+$ ]]
-          echo "rule_id=$RULE_ID" >> "$GITHUB_OUTPUT"
-          echo "sg_id=$SG_ID" >> "$GITHUB_OUTPUT"
-
-      - name: SSH into EC2 and pull latest main
-        env:
-          GH_READ_TOKEN: ${{ github.token }}
-        run: bash scripts/deploy.sh
-
-      - name: Remove temporary SSH access
-        if: always() && steps.ingress.outputs.rule_id != ''
-        env:
-          RULE_ID: ${{ steps.ingress.outputs.rule_id }}
-          SG_ID: ${{ steps.ingress.outputs.sg_id }}
-        run: |
-          aws ec2 revoke-security-group-ingress \
-            --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID"
-
-      - name: Delete runner SSH key
-        if: always()
-        run: rm -f "$HOME/.ssh/retrograde_deploy"
+          echo "Initiating rolling instance refresh for ASG: $ASG_NAME"
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}'
