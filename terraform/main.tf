@@ -631,29 +631,3 @@ resource "aws_cloudwatch_metric_alarm" "active_logins" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_autoscaling_policy.login_scale_out[0].arn]
 }
-
-# ---------------------------------------------------------------------------
-# GitHub Actions OIDC IAM Role
-# ---------------------------------------------------------------------------
-data "aws_iam_policy_document" "assume_role" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    effect  = "Allow"
-
-    principals {
-      type        = "Federated"
-      identifiers = ["arn:aws:iam::351495784406:oidc-provider/token.actions.githubusercontent.com"]
-    }
-
-    condition {
-      test     = "StringLike"
-      variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:MaxwellMensah/retrograde:*"]
-    }
-  }
-}
-
-resource "aws_iam_role" "github_deploy" {
-  name               = "retrograde-github-deploy"
-  assume_role_policy = data.aws_iam_policy_document.assume_role.json
-}
