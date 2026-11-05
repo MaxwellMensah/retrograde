@@ -92,17 +92,19 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Dynamically construct the exact bucket name using your AWS Account ID and Region[cite: 5]
+          # Dynamically construct your exact S3 bucket name
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           REGION="${AWS_REGION:-us-east-1}"
           S3_BUCKET="retrograde-static-assets-${ACCOUNT_ID}-${REGION}"
           
           echo "Using dynamically constructed S3 bucket: $S3_BUCKET"
           
-          # Sync files using the constructed bucket name
-          aws s3 cp app.py s3://$S3_BUCKET/app.py
+          # Sync files matching Terraform's expected key structure (app/, static/, images/)
+          aws s3 cp app.py s3://$S3_BUCKET/app/app.py
+          aws s3 cp requirements.txt s3://$S3_BUCKET/app/requirements.txt
+          aws s3 sync templates/ s3://$S3_BUCKET/app/templates/
           aws s3 sync static/ s3://$S3_BUCKET/static/
-          aws s3 sync templates/ s3://$S3_BUCKET/templates/
+          aws s3 sync images/ s3://$S3_BUCKET/images/
 
       - name: Trigger Auto Scaling Group Instance Refresh
         run: |
