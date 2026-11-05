@@ -20,8 +20,7 @@ log = logging.getLogger(
 )  # shows up in the normal uvicorn / systemd / CloudWatch-agent log
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NEW - Scaling + AWS settings. Override any of these with environment variables
-# on the EC2 instances (see AWS_SETUP.md).
+# Scaling + AWS settings. Override any of these with environment variables
 # ═══════════════════════════════════════════════════════════════════════════
 SCALE_THRESHOLD = int(
     os.getenv("SCALE_THRESHOLD", "12")
@@ -29,9 +28,6 @@ SCALE_THRESHOLD = int(
 SESSION_TTL_SECONDS = int(
     os.getenv("SESSION_TTL_SECONDS", "600")
 )  # a login with no heartbeat for this long stops counting
-ASG_NAME = os.getenv(
-    "ASG_NAME", ""
-)  # your Auto Scaling Group's name (metric dimension + instance count)
 CW_NAMESPACE = os.getenv(
     "CW_NAMESPACE", "Retrograde/Portal"
 )  # CloudWatch namespace the metrics are published to
@@ -82,10 +78,32 @@ def aws_region():
     )
 
 
+def discover_asg_name(instance_id: str) -> str:
+    """Automatically find the ASG name from AWS using the instance ID."""
+    if not instance_id or instance_id.startswith("localhost") or not instance_id.startswith("i-"):
+        return ""
+    try:
+        import boto3
+        client = boto3.client("autoscaling", region_name=aws_region())
+        response = client.describe_auto_scaling_instances(InstanceIds=[instance_id])
+        asig = response.get("AutoScalingInstances", [])
+        if asig:
+            discovered = asig[0].get("AutoScalingGroupName", "")
+            log.info("Auto-discovered ASG name: %s", discovered)
+            return discovered
+    except Exception as exc:
+        log.warning("Could not auto-discover ASG name: %s", exc)
+    return ""
+
+
+# Initialize ASG Name via environment variable or auto-discovery
+ASG_NAME = os.getenv("ASG_NAME", "")
+if not ASG_NAME:
+    ASG_NAME = discover_asg_name(INSTANCE.get("instance_id", ""))
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # In-memory traffic & active session tracking (this instance only)
-# ACTIVE_LOGINS / TOTAL_LOGIN_EVENTS keep their original meaning, but now a login
-# is a real session: it ends on sign-out, or when its heartbeat stops (SESSION_TTL_SECONDS).
 # ═══════════════════════════════════════════════════════════════════════════
 ACTIVE_LOGINS = set()  # student ids that currently have a live session
 TOTAL_LOGIN_EVENTS = 0  # every successful login since this process started
@@ -151,8 +169,7 @@ def end_session(session_id: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NEW - How many instances does the Auto Scaling Group have? (optional, cached)
-# Needs IAM: autoscaling:DescribeAutoScalingGroups. Returns None when ASG_NAME is unset.
+# How many instances does the Auto Scaling Group have? (optional, cached)
 # ═══════════════════════════════════════════════════════════════════════════
 _fleet = {"at": 0.0, "value": None, "client": None}
 
@@ -185,13 +202,7 @@ def get_instance_count(max_age: float = 15.0):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NEW - CloudWatch publishing. THIS is what makes AWS scale: the ASG alarm watches
-# the "ActiveLogins" metric below. (An ALB only spreads traffic; it never scales.)
-#
-#   ActiveLogins  every instance writes its own current count once a minute into the
-#                 ASG-wide series, so  Sum = logged-in users across the whole fleet.
-#   LoginEvents   new logins since the last publish (always safe to Sum).
-# Each is also published per instance (InstanceId dimension) for dashboards.
+# CloudWatch publishing logic
 # ═══════════════════════════════════════════════════════════════════════════
 def build_metric_data(
     active: int, new_logins: int, instance_id: str, asg_name: str, stamp
@@ -243,8 +254,6 @@ async def publish_loop() -> None:
 
     client = boto3.client("cloudwatch", region_name=aws_region())
     while True:
-        # wake just after each minute boundary -> exactly ONE data point per instance per minute,
-        # so the fleet-wide Sum is never double counted
         await asyncio.sleep(61 - (time.time() % 60))
         try:
             await asyncio.to_thread(publish_once, client)
@@ -280,11 +289,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Project Retrograde - Grading Checker", lifespan=lifespan)
 
-# Mount the static folder so FastAPI can serve CSS, JS, and images locally
+# Mount static folder and templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/images", StaticFiles(directory="images"), name="images")
-
-# Setup template rendering for your 3-page frontend
 templates = Jinja2Templates(directory="templates")
 
 # 1. Automatically generate 40 class student profiles + custom demo accounts
@@ -296,7 +303,6 @@ for i in range(1, 41):
     full_name = f"Class Student {i}"
     roll_no = f"RETRO-2026-{i:03d}"
 
-    # Curriculum module scores with realistic weights
     modules = {
         "Linux": {"raw_score": 70 + (i * 3) % 25, "weight": 0.15},
         "Networking & Security": {"raw_score": 65 + (i * 4) % 30, "weight": 0.15},
@@ -313,14 +319,12 @@ for i in range(1, 41):
             "email": email,
             "full_name": full_name,
             "roll_no": roll_no,
-            "gender": "M"
-            if i % 2
-            else "F",  # demo data: odd numbers M, even F (edit as you like)
+            "gender": "M" if i % 2 else "F",
             "modules": modules,
         }
     )
 
-# Add your custom presentation actors for initial testing
+# Add custom presentation actors
 STUDENTS_DB.extend(
     [
         {
@@ -434,7 +438,6 @@ for idx, (email, username, gender) in enumerate(NEW_MEMBERS, start=start_id):
     )
 
 
-# 2. Bug-free integer boundary grading function
 def get_grade(score: int):
     if score >= 85:
         return {"grade": "Distinction", "remark": "Exceptional Mastery"}
@@ -463,19 +466,11 @@ class SessionPayload(BaseModel):
     session_id: str
 
 
-# 3. Route to serve the frontend UI
-# @app.get("/", response_class=HTMLResponse)
-# def serve_frontend(request: Request):
-#     return templates.TemplateResponse("index.html", {"request": request})
-
-
-# 3. Route to serve the 3-page UI
 @app.get("/", response_class=HTMLResponse)
 def serve_frontend(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
 
 
-# 4. Login Endpoint (Triggers traffic counter)
 @app.post("/api/login")
 def login(payload: LoginPayload):
     username = payload.username.strip().lower()
@@ -490,7 +485,6 @@ def login(payload: LoginPayload):
             status_code=401, detail="Invalid username or email address."
         )
 
-    # CHANGED: the login is now a tracked session (counted for the metrics AWS watches)
     session_id = start_session(student["id"])
 
     return {
@@ -501,7 +495,6 @@ def login(payload: LoginPayload):
     }
 
 
-# 4b. NEW - the page sends a heartbeat every 30s while a candidate is signed in, and a logout when they leave
 @app.post("/api/session/heartbeat")
 def session_heartbeat(payload: SessionPayload):
     return {"ok": touch_session(payload.session_id)}
@@ -512,7 +505,6 @@ def session_logout(payload: SessionPayload):
     return {"ok": end_session(payload.session_id)}
 
 
-# 5. Private Grades & Weighted Aggregation Endpoint
 @app.get("/api/grades/{student_id}")
 def get_student_grades(student_id: int):
     student = next((s for s in STUDENTS_DB if s["id"] == student_id), None)
@@ -545,9 +537,7 @@ def get_student_grades(student_id: int):
     return {
         "full_name": student["full_name"],
         "roll_no": student["roll_no"],
-        "gender": student[
-            "gender"
-        ],  # "M" or "F" -> the results page picks the profile picture from this
+        "gender": student["gender"],
         "subjects": evaluated_modules,
         "cumulative_average": final_cumulative_score,
         "overall_grade": final_grade_info["grade"],
@@ -556,29 +546,25 @@ def get_student_grades(student_id: int):
     }
 
 
-# 6. Traffic Status Endpoint (Polled by frontend every 3s)
 @app.get("/api/traffic-status")
 def traffic_status():
     with _LOCK:
         _expire_locked(time.time())
         active_count = len(ACTIVE_LOGINS)
-    fleet = (
-        get_instance_count()
-    )  # instances InService in the ASG (None if ASG_NAME unset)
-    triggered = active_count > SCALE_THRESHOLD  # 13+ users: the AWS alarm condition
+    fleet = get_instance_count()
+    triggered = active_count > SCALE_THRESHOLD
     scaled_up = triggered or (fleet or 1) > 1
     if (fleet or 1) > 1:
         message = f"🚀 Scaled Up (ASG Active · {fleet} Instances)"
     elif triggered:
         message = "🚀 Scaling Triggered (ASG launching)"
     else:
-        message = f"🟢 Normal Capacity ({fleet or 1} Instance{'s' if (fleet or 1) != 1 else ''})"
+        message = f" Normal Capacity ({fleet or 1} Instance{'s' if (fleet or 1) != 1 else ''})"
     return {
         "active_logins": active_count,
         "total_events": TOTAL_LOGIN_EVENTS,
         "scaled_up": scaled_up,
         "status_message": message,
-        # NEW - recorded for the backend / AWS
         "instance_id": INSTANCE["instance_id"],
         "availability_zone": INSTANCE["availability_zone"],
         "instance_count": fleet,
@@ -586,7 +572,6 @@ def traffic_status():
     }
 
 
-# 7. ALB Health Check Endpoint
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "instance_id": INSTANCE["instance_id"]}
