@@ -1,11 +1,30 @@
 # Retrograde — Academic Performance Portal
 
-Retrograde is a demonstration academic performance portal built with **FastAPI**, a **Tailwind CSS** interface and **AWS infrastructure managed by Terraform**. Candidates can sign in with demonstration accounts, view weighted module results and explore the project interface.
+Across the country, educational institutions and professional certifying bodies—including Linux Institute, Database Foundation, and HashiCorp—face severe operational bottlenecks when processing and delivering raw examination scores to students.
 
-The cloud deployment demonstrates HTTPS delivery through CloudFront, load balancing, instance health recovery, private static-asset storage, GitHub Actions deployment and centralized application logging. Its next scaling objective is to accommodate **up to 41 concurrent active candidates**, with **a maximum of four application instances** under the policy described below.
+Traditionally, accessing academic transcripts and certification results requires students to physically travel to regional educational complexes. This outdated model creates three critical challenges:
+
+- Physical & Operational Friction: In-person distribution leads to massive queues, administrative burden, high travel costs for students, and delayed access to critical academic credentials.
+
+- Fragmented Partner Ecosystem: External certification vendors lack a single, unified, and secure portal to upload raw student assessment scores for automated grading, processing, and distribution.
+
+- Severe Availability & Performance Bottlenecks: Legacy systems suffer from slow page load times, security vulnerabilities, and frequent downtime during high-concurrency national result releases, when thousands of students log in simultaneously.
+
+Retrograde addresses these challenges by establishing a centralized, high-availability Cloud Ecosystem on AWS. The platform provides a secure, self-healing web portal that ingests raw scores from external certifying bodies, converts them into standardized transcripts, and delivers instant digital access to students nationwide.
 
 
-**Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
+## Technical Challenges Addressed
+From a cloud engineering and DevOps perspective, building a platform to support nationwide result releases requires solving common infrastructure failure modes:
+
+- Inconsistent Scalability: Handling massive traffic surges during nationwide result releases without over-provisioning infrastructure during idle periods.
+
+- Security & Access Control: Securing static assets, protecting user records, and enforcing least-privilege network access to prevent unauthorized data exposure.
+
+- Manual & Fragile Deployments: Transitioning away from ad-hoc server configurations toward fully automated, reproducible Infrastructure-as-Code (IaC) and self-healing CI/CD pipelines.
+
+- Observability Deficits: Eliminating blind spots during traffic spikes by streaming application metrics, active login indicators, and centralizing system logs.
+
+> **Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
 
 
 - **Repository:** [MaxwellMensah/retrograde](https://github.com/MaxwellMensah/retrograde)
@@ -39,19 +58,14 @@ The environment may be destroyed between demonstrations to control costs. Recrea
 
 ## Problem and objectives
 
-The project addresses a common startup scenario: slow page delivery, inconsistent availability during busy periods, security concerns and a deployment process that is difficult to reproduce across a team.
+Across the country, educational institutions and professional certifying bodies, including the Linux Institute, Database Foundation, and HashiCorp, face severe operational bottlenecks when processing and delivering raw examination scores to students.
+Traditionally, accessing academic transcripts and certification results requires students to physically travel to regional educational complexes. This outdated model creates three critical challenges:
 
-Retrograde demonstrates how to:
+1. Physical & Operational Friction: In-person distribution leads to massive queues, administrative burden, high travel costs for students, and delayed access to critical academic credentials.
+2. Fragmented Partner Ecosystem: External certification vendors lack a single, unified, and secure portal to upload raw student assessment scores for automated grading, processing, and distribution.
+3. Severe Availability & Performance Bottlenecks: Legacy systems suffer from slow page load times, security vulnerabilities, and frequent downtime during high-concurrency national result releases, when thousands of students log in simultaneously.
 
-- Deliver the application through an HTTPS CloudFront endpoint.
-- Route dynamic requests to healthy EC2 targets through an Application Load Balancer.
-- Serve images and CSS from a private S3 origin through CloudFront.
-- Rebuild infrastructure and replacement instances from version-controlled configuration.
-- Validate and release changes through GitHub Actions and peer-reviewed pull requests.
-- Observe application behavior through metrics, alarms and centralized logs.
-- Keep the demonstration's capacity and costs bounded.
-
-This project demonstrates self-healing infrastructure. One desired application instance is not uninterrupted high availability: instance failure or replacement can interrupt requests. Multiple healthy instances across Availability Zones and durable shared state are needed for a stronger availability design.
+Retrograde addresses these challenges by establishing a centralized, high-availability Cloud Ecosystem on AWS. The platform provides a secure, self-healing web portal that ingests raw scores from external certifying bodies, converts them into standardized transcripts, and delivers instant digital access to students nationwide.
 
 ## Application features
 
