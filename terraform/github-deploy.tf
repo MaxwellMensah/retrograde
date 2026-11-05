@@ -31,29 +31,33 @@ resource "aws_iam_role" "github_deploy" {
       Action = "sts:AssumeRoleWithWebIdentity"
 
       Condition = {
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:MaxwellMensah/retrograde:*"
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub" = var.github_oidc_subject != "" ? var.github_oidc_subject : "repo:${var.github_repository}:ref:refs/heads/main"
         }
       }
     }]
   })
 }
 
-# Allows the workflow to temporarily permit SSH from its runner and discover security groups.
+# Discovery APIs require wildcard resources. Rule edits are scoped to this stack's web SG.
 resource "aws_iam_role_policy" "github_ssh_access" {
   role = aws_iam_role.github_deploy.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "ec2:DescribeSecurityGroups",
-        "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:RevokeSecurityGroupIngress"
-      ]
-      Resource = "*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeInstances", "ec2:DescribeSecurityGroups"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"]
+        Resource = aws_security_group.web.arn
+      }
+    ]
   })
 }
 
