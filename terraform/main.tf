@@ -635,3 +635,33 @@ resource "aws_cloudwatch_metric_alarm" "active_logins" {
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_autoscaling_policy.login_scale_out[0].arn]
 }
+
+# ---------------------------------------------------------------------------
+# Scale-In Configuration (Adds automatic scale-down)
+# ---------------------------------------------------------------------------
+# 1. Scale-In Policy (Removes 1 instance at a time)
+resource "aws_autoscaling_policy" "login_scale_in" {
+  count                  = var.enable_login_scaling ? 1 : 0
+  name                   = "${var.name_prefix}-login-scale-in"
+  autoscaling_group_name = aws_autoscaling_group.web.name
+  adjustment_type        = "ChangeInCapacity"
+  scaling_adjustment     = -1
+  cooldown               = 300
+  policy_type            = "SimpleScaling"
+}
+
+# 2. Low-Threshold Alarm to trigger scale-in when load drops
+resource "aws_cloudwatch_metric_alarm" "active_logins_low" {
+  count               = var.enable_login_scaling ? 1 : 0
+  alarm_name          = "${var.name_prefix}-active-logins-low"
+  namespace           = "Retrograde/Portal"
+  metric_name         = "ActiveLogins"
+  dimensions          = { AutoScalingGroupName = aws_autoscaling_group.web.name }
+  statistic           = "Sum"
+  period              = 30
+  evaluation_periods  = 4
+  comparison_operator = "LessThanThreshold"
+  threshold           = var.scale_threshold / 2  # drops below half your peak threshold
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_autoscaling_policy.login_scale_in[0].arn]
+}
