@@ -177,6 +177,7 @@ resource "aws_iam_role_policy_attachment" "ssm_server" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+
 # ---------------------------------------------------------------------------
 # 9. Launch Template & Auto Scaling Group
 # ---------------------------------------------------------------------------
@@ -629,4 +630,30 @@ resource "aws_cloudwatch_metric_alarm" "active_logins" {
   threshold           = var.scale_threshold
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_autoscaling_policy.login_scale_out[0].arn]
+}
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC IAM Role
+# ---------------------------------------------------------------------------
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = ["arn:aws:iam::351495784406:oidc-provider/token.actions.githubusercontent.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:YOUR_GITHUB_ORG/YOUR_REPO:*"]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_deploy" {
+  name               = "retrograde-github-deploy"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
