@@ -601,7 +601,7 @@ resource "aws_iam_role_policy" "app_metrics" {
     ]
   })
 }
-2
+
 data "aws_cloudfront_cache_policy" "disabled" {
   name = "Managed-CachingDisabled"
 }
