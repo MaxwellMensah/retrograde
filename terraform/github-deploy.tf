@@ -1,6 +1,7 @@
 variable "github_repository" {
   description = "GitHub owner/repository allowed to deploy"
   type        = string
+  default     = "MaxwellMensah/retrograde"
 }
 
 variable "github_oidc_subject" {
@@ -30,13 +31,8 @@ resource "aws_iam_role" "github_deploy" {
       Action = "sts:AssumeRoleWithWebIdentity"
 
       Condition = {
-        StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = (
-            var.github_oidc_subject != ""
-            ? var.github_oidc_subject
-            : "repo:${var.github_repository}:ref:refs/heads/main"
-          )
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:MaxwellMensah/retrograde:*"
         }
       }
     }]
