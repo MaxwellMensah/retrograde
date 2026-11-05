@@ -7,6 +7,9 @@ trap 'echo "Bootstrap failed at line $LINENO"' ERR
 export AWS_DEFAULT_REGION='${region}'
 BUCKET_NAME='${bucket}'
 
+printf '%s\n' "$BUCKET_NAME" > /etc/retrograde-assets-bucket
+chmod 644 /etc/retrograde-assets-bucket
+
 retry() {
   local attempt
   for attempt in $(seq 1 12); do
@@ -129,3 +132,11 @@ nginx -t
 systemctl enable nginx
 systemctl restart nginx
 curl -fsS http://127.0.0.1/health
+
+# BEGIN RETROGRADE CLOUDWATCH
+cat > /usr/local/sbin/retrograde-install-logging <<'RETROGRADE_LOG_SCRIPT'
+${logging_script}
+RETROGRADE_LOG_SCRIPT
+chmod 700 /usr/local/sbin/retrograde-install-logging
+bash /usr/local/sbin/retrograde-install-logging '${log_group}' '${region}'
+# END RETROGRADE CLOUDWATCH
