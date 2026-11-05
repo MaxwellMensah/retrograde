@@ -1,474 +1,583 @@
-# Retrograde - Academic Performance Portal
+# Retrograde — Academic Performance Portal
 
-A high-availability candidate performance verification and grading portal, engineered with **FastAPI**,
-**Tailwind CSS** and an Apple-style liquid-glass interface. It runs on **AWS** behind a load balancer and
-**scales itself out automatically when more than 12 candidates are signed in at the same time**. The whole
-AWS environment is built from code with **Terraform**: one command to create it, one to remove it.
+Retrograde is a demonstration academic performance portal built with **FastAPI**, a **Tailwind CSS** interface and **AWS infrastructure managed by Terraform**. Candidates can sign in with demonstration accounts, view weighted module results and explore the project interface.
 
----
+The cloud deployment demonstrates HTTPS delivery through CloudFront, load balancing, instance health recovery, private static-asset storage, GitHub Actions deployment and centralized application logging. Its next scaling objective is to accommodate **up to 41 concurrent active candidates**, with **a maximum of four application instances** under the policy described below.
+
+> **Deployment status:** application log delivery was verified on 5 November 2026, and the project owner reports that the remaining deployment tests passed. The AWS console screenshots captured on 5 November 2026 confirm one healthy instance, ASG minimum/desired capacity of 1 and maximum of 2. The alarm list shows no actions, and the shown SNS topic has no subscriptions; alarm notification delivery is not configured through that path. The four-instance scaling policy in this README is a proposed configuration, not a claim that it has already been deployed or tested.
+>
+> **Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
+
+- **Repository:** [MaxwellMensah/retrograde](https://github.com/MaxwellMensah/retrograde)
+- **Latest demonstrated URL:** [Open Retrograde](https://d26dnowt2i27ho.cloudfront.net/)
+- **Region:** `us-east-1`
+- **Team coordination:** Trello; completed by the project team
+
+The environment may be destroyed between demonstrations to control costs. Recreating CloudFront generates a new hostname; always obtain the current URL from Terraform outputs.
 
 ## Contents
 
-1. [The big picture](#-the-big-picture)
-2. [Key features](#-key-features)
-3. [What's new](#-whats-new)
-4. [Repository structure](#-repository-structure)
-5. [How the application works](#-how-the-application-works)
-6. [How the app tells AWS it is busy](#-how-the-app-tells-aws-it-is-busy)
-7. [AWS services: what each does and why we need it](#-aws-services-what-each-does-and-why-we-need-it)
-8. [Terraform: building it all with one command](#-terraform-building-it-all-with-one-command)
-9. [The service lifecycle, phase by phase](#-the-service-lifecycle-phase-by-phase)
-10. [Local development](#-local-development)
-11. [Configuration reference](#-configuration-reference)
-12. [Demo accounts](#-presentation-demo-accounts)
-13. [Troubleshooting](#-troubleshooting)
-14. [Security notes and known limits](#-security-notes-and-known-limits)
-15. [License](#-license)
+1. [Problem and objectives](#problem-and-objectives)
+2. [Application features](#application-features)
+3. [Architecture](#architecture)
+4. [AWS services and responsibilities](#aws-services-and-responsibilities)
+5. [Scaling for up to 41 candidates](#scaling-for-up-to-41-candidates)
+6. [Repository guide](#repository-guide)
+7. [Prerequisites and configuration](#prerequisites-and-configuration)
+8. [Local development](#local-development)
+9. [Deploying the AWS environment](#deploying-the-aws-environment)
+10. [GitHub Actions and application releases](#github-actions-and-application-releases)
+11. [Application lifecycle and API](#application-lifecycle-and-api)
+12. [Monitoring and log delivery](#monitoring-and-log-delivery)
+13. [Verification and evidence](#verification-and-evidence)
+14. [Security and known limitations](#security-and-known-limitations)
+15. [Troubleshooting](#troubleshooting)
+16. [Costs and cleanup](#costs-and-cleanup)
+17. [Presentation and project handover](#presentation-and-project-handover)
+18. [Future improvements](#future-improvements)
+19. [References and license](#references-and-license)
 
----
+## Problem and objectives
 
-## 🧭 The big picture
+The project addresses a common startup scenario: slow page delivery, inconsistent availability during busy periods, security concerns and a deployment process that is difficult to reproduce across a team.
 
-Think of the portal as a **restaurant**. Every AWS service has a job a restaurant also has to do:
+Retrograde demonstrates how to:
 
-| In the restaurant | In AWS | Its job |
-|---|---|---|
-| The host at the front door | **Application Load Balancer (ALB)** | One public address. Seats each guest at a table that is open and healthy. |
-| Tables and waiters | **EC2 instances** running `app.py` | Actually serve the candidates. |
-| The manager who opens extra tables | **Auto Scaling Group (ASG)** | Adds or removes instances so there are always enough. |
-| Someone counting guests at the door | **CloudWatch metric** `ActiveLogins` | The number the manager watches. |
-| A bell that rings when it gets too busy | **CloudWatch alarm** | Fires when more than 12 users are signed in. |
-| The manager's standing order | **Scaling policy** | "When the bell rings, run 2 tables (or 3)." |
-| A recipe book copied to every new kitchen | **S3 bucket** | Every new instance downloads the same app code. |
-| Staff badges | **IAM role** | Lets instances read S3 and report to CloudWatch, nothing more. |
-| Locked doors | **Security groups** | Only the host can reach the kitchen. |
-| The architect's blueprint and the builder | **Terraform** | Builds all of the above from code, identically every time. |
+- Deliver the application through an HTTPS CloudFront endpoint.
+- Route dynamic requests to healthy EC2 targets through an Application Load Balancer.
+- Serve images and CSS from a private S3 origin through CloudFront.
+- Rebuild infrastructure and replacement instances from version-controlled configuration.
+- Validate and release changes through GitHub Actions and peer-reviewed pull requests.
+- Observe application behavior through metrics, alarms and centralized logs.
+- Keep the demonstration's capacity and costs bounded.
 
-### Architecture
+This project demonstrates self-healing infrastructure. One desired application instance is not uninterrupted high availability: instance failure or replacement can interrupt requests. Multiple healthy instances across Availability Zones and durable shared state are needed for a stronger availability design.
 
-```
-                         ┌───────────────────────────────────┐
-  Candidate's browser ──▶│     Application Load Balancer     │   port 80 · health check /health
-                         │   (one public DNS address)        │   sticky sessions (cookie)
-                         └─────────────────┬─────────────────┘
-                   ┌───────────────────────┼───────────────────────┐
-                   ▼                       ▼                       ▼
-            ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-            │  EC2  #1    │         │  EC2  #2    │         │  EC2  #3    │   ◀── Auto Scaling Group
-            │  FastAPI    │         │  added at   │         │  added at   │       min 1 · max 3
-            │  :8000      │         │  13 users   │         │  24 users   │
-            └──────┬──────┘         └─────────────┘         └─────────────┘
-                   │  once a minute: "how many users are signed in on me?"
-                   ▼
-        ┌───────────────────────────────────┐
-        │  CloudWatch metric ActiveLogins   │   namespace  Retrograde/Portal
-        │  (every instance adds its count)  │   Sum = users signed in across the whole fleet
-        └─────────────────┬─────────────────┘
-                          │  is the Sum greater than 12 ?
-                          ▼
-        ┌───────────────────────────────────┐      ┌──────────────────────┐
-        │        CloudWatch alarm           │─────▶│    Scaling policy    │──▶  "run 2 instances"
-        └───────────────────────────────────┘      └──────────────────────┘      (3 at 24+ users)
+## Application features
 
-   Set up once by Terraform ─▶  S3 bucket (app code) · IAM role · security groups · all of the above
-```
-
-An **ALB only spreads traffic**. It never adds servers. The thing that adds servers is the **Auto Scaling
-Group**, and it only acts when a **CloudWatch alarm** tells it to. The app supplies the number that alarm
-watches (the count of signed-in users), because AWS cannot see logins on its own.
-
----
-
-## 🚀 Key features
-
-* **Authenticated Transcripts:** secure sign-in that renders each candidate's weighted score, grade, GPA
-  and a per-module breakdown with score bars.
-* **Weighted Engineering Curriculum:** deterministic scoring across 6 modules:
-  * AWS Cloud Services (25%)
-  * Terraform IaC (20%)
-  * Linux Administration (15%)
-  * Networking & Security (15%)
-  * Database Essentials (15%)
-  * AI Fundamentals (10%)
-* **Live infrastructure status:** a header badge polls the backend every 3 seconds and shows capacity
-  ("Normal Capacity", "Scaling Triggered", "Scaled Up"), plus which instance served you.
-* **Auto-scaling on real usage:** the 13th concurrent sign-in triggers AWS to add instances.
-* **Thinkibot, the Welcome Centre assistant:** answers sign-in, module weight, grading, auto-scaling and
-  contact questions, and can report live server numbers.
-* **About & Contact page:** alumni hero, project overview, the seven RETROGRADE executives, contact grid
-  (X, Facebook, phone, email), and a Google Map with directions.
-* **Infrastructure as code:** the entire AWS environment is one `terraform apply`.
-
----
-
-## ✨ What's new
-
-| Area | Update |
+| Feature | Description |
 |---|---|
-| **Interface** | Apple-style tiled layout on a white page; liquid-glass header, panels and cards; Helvetica Neue type; fully responsive with a glass menu for phones and tablets. |
-| **Home page** | Vibrant hero, world-map metrics tile, campus gallery, curriculum cards, dark accreditation ticker, dark footer. |
-| **Results page** | A focused, signed-in view (the landing menu is hidden), clear watery glass on a neutral background, larger type, outlined score bars, and a **profile picture chosen by gender** (M shows Shrek, F shows Fiona). |
-| **About & Contact** | New page with alumni photo, executives, contact details and a Google Map. |
-| **Thinkibot** | The assistant now understands what you ask instead of giving one canned answer. |
-| **Backend** | Real login sessions (heartbeat and sign-out), a `gender` field, instance details in the status API, and a CloudWatch publisher for `ActiveLogins`. |
-| **Infrastructure** | Terraform builds the ALB, Auto Scaling Group, S3 bundle, IAM, alarms and scaling policies in one go. |
-| **Delivery** | Tailwind CSS is compiled into the page (no CDN warning); GitHub Actions validates the Python and Terraform. |
+| Candidate results | Weighted scores, module breakdown, grades and GPA presentation |
+| Interface | Responsive landing page, sign-in, results, and About & Contact views |
+| Capacity display | Backend status polling displays active sessions and instance/capacity information |
+| Thinkibot | Interface assistant for project, sign-in, grading and capacity questions |
+| Session tracking | Heartbeats, explicit logout and expiry support active-login metrics |
+| Cloud delivery | CloudFront, ALB, EC2, nginx and private S3 assets |
+| Repeatable releases | Terraform infrastructure and GitHub Actions deployment scripts |
+| Observability | Application/nginx log streams, CPU alarm and target 5xx percentage alarm |
 
----
+### Curriculum weights
 
-## 📁 Repository structure
+| Module | Weight |
+|---|---:|
+| AWS Cloud Services | 25% |
+| Terraform IaC | 20% |
+| Linux Administration | 15% |
+| Networking & Security | 15% |
+| Database Essentials | 15% |
+| AI Fundamentals | 10% |
+| **Total** | **100%** |
 
-```text
-retrograde/
-├── .github/workflows/     # CI: validates the Python and the Terraform on every push / pull request
-├── templates/
-│   └── index.html    # the whole frontend: home, sign-in, results, About & Contact (served by FastAPI)
-├── terraform/             # infrastructure as code: one `apply` builds the AWS environment
-│   ├── main.tf            #   every AWS resource
-│   ├── variables.tf       #   the settings you can change
-│   ├── outputs.tf         #   prints the site URL and the demo commands
-│   └── user_data.sh.tpl   #   boot script every new server runs
-├── app.py                 # FastAPI backend: login, grades, session tracking, CloudWatch publisher
-├── simulate_logins.py     # logs in N students at once to trigger scaling on demand
-├── requirements.txt       # fastapi, uvicorn, jinja2, boto3
-├── AWS_SETUP.md           # the same AWS setup done by hand with the CLI (learning / fallback)
-├── LICENSE
-└── README.md
+Demonstration accounts and results must match the records in `app.py`. The intended test audience is up to 41 active candidates; verify that enough distinct synthetic accounts exist before testing that load.
+
+## Architecture
+
+**Target capacity: minimum 1, initial desired 1, maximum 4 instances.** The diagram documents the intended four-instance design ahead of the next Terraform apply. The last verified deployment and the retained screenshots show a maximum of **2**; they are historical evidence, not confirmation that the four-instance update is live.
+
+Setting the maximum to 4 permits four instances but does not launch four immediately or implement the 13/26/39-login policy by itself. Apply and verify both the capacity limit and the scaling policy described below.
+
+### Request flow
+
+```mermaid
+flowchart TD
+    Browser[Candidate browser] -->|HTTPS| CDN[CloudFront]
+    CDN -->|Dynamic routes: HTTP 80| ALB[Application Load Balancer]
+    CDN -->|Static and image routes: signed OAC requests| S3[Private S3 bucket]
+    subgraph ASG["ASG target: min 1, initial desired 1, max 4 — pending apply"]
+        Nginx[nginx on EC2: port 80] -->|Localhost port 8000| App[FastAPI application]
+    end
+    ALB -->|HTTP 80 and health checks| Nginx
 ```
 
----
+The EC2 box represents the application stack repeated across up to four instances in the intended design, starting with one instance. CloudFront sends `/static/*` and `/images/*` to S3; its default behavior forwards application traffic to the ALB.
 
-## 🧩 How the application works
-
-### Frontend
-
-One page (`templates/index.html`) switches between four views without reloading:
-
-| View | What it shows |
+| Connection or control | Deployed behavior in the reviewed configuration |
 |---|---|
-| **Home** | Hero, live metrics, campus life, weighted curriculum, accreditation badges. |
-| **Sign In** | Candidate login (username + Azubi email). |
-| **Results** | The candidate's transcript. The main menu is hidden here; **Sign Out** returns to Home. |
-| **About & Contact** | Project overview, executives, contact details, map. |
+| Browser → CloudFront | HTTPS; HTTP viewer requests redirect to HTTPS |
+| CloudFront → ALB | HTTP on port 80 |
+| ALB → EC2 | HTTP on port 80; nginx forwards to FastAPI |
+| nginx → FastAPI | `127.0.0.1:8000` |
+| Health check | `/health`, expecting HTTP 200 |
+| ALB ingress | CloudFront origin-facing managed prefix list on port 80 |
+| EC2 application ingress | ALB security group on port 80 |
+| Static origin | Private S3 with Origin Access Control and a distribution-scoped bucket policy |
+| Dynamic caching | Disabled |
+| Static caching | Reviewed default TTL 60 seconds; maximum 300 seconds |
+| Session routing | ALB cookie stickiness, reviewed duration 3,600 seconds |
 
-Contact details and the executives list are placeholders held in one clearly marked block near the end of
-the page's script (`CONTACT` and `EXECUTIVES`). Edit them there.
+**TLS terminates at CloudFront in this configuration.** HTTPS at the public URL does not mean CloudFront-to-ALB or ALB-to-EC2 traffic is encrypted. The instructor accepted the default CloudFront hostname, which uses CloudFront's default certificate; a custom domain is not required for this demonstration.
 
-### Backend API
+### Monitoring and scaling flow
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/` | Serves the page. |
-| `POST` | `/api/login` | Checks credentials, starts a tracked session, returns `student_id` and `session_id`. |
-| `POST` | `/api/session/heartbeat` | The page calls this every 30 s while signed in, so the session stays "active". |
-| `POST` | `/api/session/logout` | Ends the session (Sign Out or closing the tab). |
-| `GET` | `/api/grades/{student_id}` | Weighted score, grade, GPA, per-module results and `gender`. |
-| `GET` | `/api/traffic-status` | Active logins, instance id and zone, instance count, scaling status. Polled by the header badge. |
-| `GET` | `/health` | Load balancer health check. Returns `200`. |
-
-### Grading
-
-Final score = the sum of each module score x its weight. GPA = final score / 100 x 4.0.
-
-| Score | Grade | Remark |
-|---|---|---|
-| 85+ | Distinction | Exceptional Mastery |
-| 75-84 | A1 | Excellent |
-| 70-74 | B2 | Very Good |
-| 65-69 | B3 | Good |
-| 60-64 / 55-59 / 50-54 | C4 / C5 / C6 | Credit |
-| below 50 | F9 | Needs Remediation |
-
-### Signing in
-
-Candidates sign in with their **Azubi email** and a **username that is the first name from that email**
-(an email starting with `esther` means the username is `esther`). Capital letters do not matter.
-
----
-
-## 📡 How the app tells AWS it is busy
-
-AWS can see CPU and network, but it has no idea how many candidates are signed in. So the app counts them and
-reports the number itself.
-
-```
- Browser                        ALB                     EC2 (FastAPI)
-    │  POST /api/login ──────────▶│─────────────────────────▶│  check credentials → start a session
-    │◀────────── { student_id, session_id } ──────────────────│
-    │  GET /api/grades/101 ──────▶│─────────────────────────▶│  weighted score, grade, GPA, gender
-    │  every 30 s: heartbeat ────▶│─────────────────────────▶│  "still here"
-    │  Sign Out / tab closed ────▶│─────────────────────────▶│  session removed
-                                                             │
-                                  once a minute (at second :01)
-                                                             ▼
-                                              CloudWatch  ActiveLogins = N
+```mermaid
+flowchart TD
+    App[Application instances] -->|ActiveLogins samples| Metrics[CloudWatch metrics]
+    Metrics --> Alarm[Login threshold alarm]
+    Alarm --> Policy[Configured scaling policy]
+    Policy --> ASG["ASG target maximum: 4 — pending apply"]
+    ASG -->|Launch and bootstrap| App
+    App -->|Application and nginx files| Agent[CloudWatch agent]
+    Agent --> Logs[CloudWatch Logs]
 ```
 
-* **What counts as a login:** distinct students with a live session. The same student signing in twice counts
-  once. A session ends on sign-out, when the tab closes, or after 10 minutes with no heartbeat.
-* **Two metrics are published** (namespace `Retrograde/Portal`):
+Login-based scaling requires its alarm and policy to be enabled. The ALB distributes requests; the ASG changes instance capacity when its configured policy or health checks require it.
 
-  | Metric | Meaning |
-  |---|---|
-  | `ActiveLogins` | Users currently signed in on this instance. **The alarm watches this.** |
-  | `LoginEvents` | New logins since the last report (always safe to add up). |
+## AWS services and responsibilities
 
-  Each is published twice: once for the whole Auto Scaling Group (`AutoScalingGroupName`) and once for the
-  individual instance (`+ InstanceId`) for dashboards.
-* **Why `Sum`:** every instance writes its own count into the group-wide series, so the **Sum is the number of
-  users signed in across the whole fleet**.
-* **Why once a minute, at second :01:** it guarantees exactly one data point per instance per minute, so the
-  Sum is never double counted.
-* **Why stickiness is on:** each instance only counts users signed in *on it*. The load balancer cookie keeps
-  one user on one instance, so nobody is counted twice.
-* **The threshold:** the alarm fires when the Sum is **greater than 12**, so the **13th** sign-in triggers it.
-
----
-
-## ☁️ AWS services: what each does and why we need it
-
-| Service | What it does here | Why we need it | Terraform resource |
-|---|---|---|---|
-| **VPC and subnets** (existing) | The private network the system lives in, spread over at least 2 Availability Zones. | A load balancer needs two zones, so one zone failing does not take the site down. | `aws_vpc`, `aws_subnets` (looked up, not created) |
-| **S3** | A private bucket holding `app.py` and the page. | Every new instance, including ones created automatically at scale-out time, fetches identical code with no manual copying. Keeps the server image generic. | `aws_s3_bucket`, `aws_s3_object` |
-| **IAM role + instance profile** | Gives each server three permissions: read the app bundle from S3, publish to the `Retrograde/Portal` namespace, read the Auto Scaling Group size. | Servers act with no stored passwords, and can do only what they need (least privilege). | `aws_iam_role`, `aws_iam_role_policy`, `aws_iam_instance_profile` |
-| **Systems Manager (Session Manager)** | Opens a shell on a server from the AWS console. | Debugging without SSH keys or an open port 22. | `AmazonSSMManagedInstanceCore` policy on the role |
-| **Security groups** | Firewall rules: the internet reaches the ALB on port 80; only the ALB reaches the app on port 8000. | The servers are never directly exposed. | `aws_security_group` (x2) |
-| **Application Load Balancer** | A single public address that spreads requests across healthy servers. | A stable entry point while servers come and go; removes failing servers; sticky sessions. | `aws_lb`, `aws_lb_listener` |
-| **Target group** | The list of servers the ALB sends to, plus the `/health` check. | The ALB needs to know which servers are alive (healthy twice in a row, 15 s apart). | `aws_lb_target_group` |
-| **Launch template** | The blueprint for every server: image, size, role, network, boot script. | Scaling needs a repeatable recipe for "one more server". | `aws_launch_template` |
-| **EC2** (Amazon Linux 2023, `t3.micro`) | Runs FastAPI on port 8000 as a `systemd` service. | The compute that serves the portal. | created by the Auto Scaling Group |
-| **Auto Scaling Group** | Keeps 1 to 3 servers running, replaces unhealthy ones, registers new ones with the load balancer. | The thing that actually adds and removes servers. | `aws_autoscaling_group` |
-| **CloudWatch metric** | `ActiveLogins`, published by the app every minute. | Scaling on signed-in users is exact and demonstrable. CPU would barely move for 13 logins. | published by `app.py` |
-| **CloudWatch alarm** | Watches `Sum(ActiveLogins) > 12` (scale out) and `< 8` for 5 minutes (scale in). | AWS needs an alarm to know when to act. | `aws_cloudwatch_metric_alarm` (x2) |
-| **Scaling policy** | Step scaling to an exact size: 13-23 users run 2 servers; 24 or more run 3; below 8 returns to 1. | Turns the alarm into an action. Exact sizes avoid endless growth. | `aws_autoscaling_policy` (x2) |
-| **Terraform** | Describes all of the above as code. | Reproducible, previewable (`plan`) and removable (`destroy`) environments. | the whole `terraform/` folder |
-| **GitHub Actions** | Validates the Python and Terraform on every push. | Catches mistakes before they reach AWS. | `.github/workflows/` |
-
----
-
-## 🏗️ Terraform: building it all with one command
-
-Terraform reads the `.tf` files and creates, in the right order, everything in the table above. It also
-records what it built in a **state file** (`terraform.tfstate`) so it can later change or remove exactly those
-resources.
-
-### Prerequisites
-
-| Need | Check |
+| Service | Responsibility |
 |---|---|
-| An AWS account and credentials | `aws sts get-caller-identity` prints your account |
-| Terraform 1.5 or newer | `terraform version` |
-| An existing VPC tagged `Name = mygroupvpc` with **public** subnets in at least 2 zones | or pass `-var 'subnet_ids=["subnet-aaa","subnet-bbb"]'` |
-| The latest `app.py` and `templates/index.html` in the repo root | Terraform uploads them to S3 |
-| Python 3 (only for the `simulate_logins.py` demo script) | `python3 --version` |
+| Existing VPC and selected subnets | Network placement across the configured Availability Zones; Terraform looks these up rather than creating a complete new network |
+| CloudFront | HTTPS entry point, HTTP viewer redirects, dynamic routing and static caching |
+| S3 | Private static assets and application bootstrap artifacts |
+| Application Load Balancer | Target selection, sticky sessions and health checks |
+| EC2 / launch template | Amazon Linux 2023 hosts, nginx, FastAPI and bootstrap configuration |
+| Auto Scaling Group | Desired capacity, replacement of unhealthy instances and optional dynamic scaling |
+| IAM | Instance permissions, deployment permissions and GitHub OIDC trust |
+| Systems Manager | Administrative access where the instance is registered and reachable |
+| CloudWatch | Metrics, alarms and centralized application/nginx logs |
+| AWS Budgets | Cost notifications at the configured threshold |
+| GitHub Actions | Validation and application deployment workflow |
 
-### Quick start
+## Scaling for up to 41 candidates
 
-```bash
-cd terraform
-terraform init       # downloads the AWS provider
-terraform plan       # preview: about 20 resources to add, nothing else
-terraform apply      # type yes · about 5-8 minutes
-terraform output     # the site URL and the two demo commands
-```
+### What “every 13 logins” means
 
-`apply` waits until the first server is healthy behind the load balancer, so when it finishes the site is
-live at the printed URL.
+For this project, the intended policy is to **start adding capacity when the 13th, 26th and 39th concurrent active candidates arrive**. This is an early scale-out policy, giving headroom before an instance would need to serve another full group of 13 users.
 
-### What `apply` builds, in order
+| Concurrent active candidates | Intended capacity after scale-out settles |
+|---|---:|
+| 0–12 | 1 instance |
+| 13–25 | 2 instances |
+| 26–38 | 3 instances |
+| 39–41 | 4 instances |
 
-```
-terraform apply
-   │
-   ├─ 1  Look up ──────────  your VPC and subnets · the latest Amazon Linux 2023 image
-   ├─ 2  S3 ───────────────  private bucket · upload app.py and the page
-   ├─ 3  IAM ──────────────  role + instance profile (S3 read · CloudWatch publish · ASG read · SSM)
-   ├─ 4  Security groups ──  alb-sg (80 from the internet) · web-sg (8000 from alb-sg only)
-   ├─ 5  Load balancer ────  ALB · target group (/health, stickiness) · listener on port 80
-   ├─ 6  Compute ──────────  launch template · Auto Scaling Group     ◀── waits for 1 healthy server
-   └─ 7  Scaling ──────────  scale-out policy + alarm · scale-in policy + alarm
-```
+The requested capacity is:
 
-### What each new server does when it boots
+`min(4, 1 + floor(active_candidates / 13))`
 
-The launch template's boot script (`user_data.sh.tpl`) runs once per server:
+With scale-in disabled, this is an upward capacity target: after reaching four instances, falling traffic does not automatically reduce the group to the lower table row.
 
-```
- 1. install Python 3.11
- 2. download app.py and the page from the S3 bucket
- 3. pip install fastapi uvicorn jinja2 boto3
- 4. write /etc/retrograde.env   (ASG_NAME, SCALE_THRESHOLD, AWS_REGION, CW_PUBLISH)
- 5. register and start the systemd service  →  uvicorn on 0.0.0.0:8000, restarts if it crashes
-```
-Its log is `/var/log/retrograde-bootstrap.log`.
+A different interpretation—“allow 13 users per instance before adding another”—would use `ceil(active_candidates / 13)`, with a minimum of one. Its expansion points would be **14, 27 and 40**. Both interpretations reach four instances for 41 users. This README uses **13, 26 and 39** to match the intended trigger wording.
 
-### Settings you can change (`terraform/variables.tf`)
+These thresholds are a demonstration policy, **not a measured EC2 capacity limit**. Login count alone does not establish how many requests an instance can handle. Load tests should also measure latency, errors and CPU.
 
-| Variable | Default | Meaning |
+### Four-instance target and deployment baseline
+
+| Item | Last reviewed configuration | Intended four-instance design |
 |---|---|---|
-| `region` | `us-east-1` | AWS region |
-| `vpc_name` | `mygroupvpc` | Name tag of the existing VPC |
-| `subnet_ids` | `[]` | Leave empty to auto-pick one subnet per zone |
-| `name_prefix` | `retrograde` | Prefix for resource names |
-| `asg_name` | `retrograde-asg` | Auto Scaling Group name (also the metric dimension) |
-| `instance_type` | `t3.micro` | Server size |
-| `min_size` / `max_size` | `1` / `3` | Fleet limits (the policy needs a max of 3 or more) |
-| `login_threshold` | `12` | Scale out when more than this many users are signed in |
-| `enable_scale_in` / `scale_in_threshold` | `true` / `8` | Scale back down after 5 minutes below this |
-| `instance_profile_name` | `""` | Only if your account forbids creating IAM roles: use an existing profile |
-| `allowed_cidr` | `0.0.0.0/0` | Who may open the site |
-| `app_dir` | `""` | Folder with `app.py`; empty means the repo root |
+| Minimum / initial desired capacity | 1 / 1 | 1 / 1 |
+| Maximum capacity | 2 | 4 |
+| Login scaling | Optional; absent from the last shared plan | Explicitly enabled and tested |
+| Scaling action in source | Simple scaling: add 1 when total logins exceed the threshold | Capacity bands corresponding to 13, 26 and 39 active candidates |
+| Automatic scale-in | Not configured | Keep disabled while sessions remain in memory |
 
-Example: `terraform apply -var login_threshold=5 -var max_size=4`
+**Increasing `max_size` to 4 alone does not implement the table.** The reviewed `ChangeInCapacity = 1` policy responds to one global threshold. If that alarm remains breached, further scale-outs can occur after cooldown; it does not wait for the next group of 13 candidates.
 
-### Changing the code after the first deploy
+An implementation option is a scale-out **step scaling policy with `ExactCapacity`** targets of 2, 3 and 4 for the corresponding login bands. The alarm threshold, inclusive/exclusive step bounds, warmup and policy settings must be implemented together and tested. Step bounds are relative to the alarm threshold in the API/Terraform configuration. Do not simply copy the table numbers into step bounds without calculating those offsets.
 
-```bash
-cd terraform
-terraform apply      # re-uploads the changed files and creates a new launch template version
+Capacity control must also prevent lower bands from reducing an already larger group while sessions remain in memory. Do not assume an `ExactCapacity` target by itself guarantees scale-out-only behavior; verify that the implemented policy only raises desired capacity, or use capacity-aware control that enforces this restriction.
 
-# running servers keep the old code until replaced:
-aws autoscaling start-instance-refresh --auto-scaling-group-name retrograde-asg \
-  --preferences '{"MinHealthyPercentage":0,"InstanceWarmup":120}'
-```
+No four-instance Terraform policy is introduced by this README. Update the infrastructure code and review its plan before describing these bands as deployed behavior.
 
-### Removing everything
+### How active logins are measured
 
-```bash
-terraform destroy    # type yes · about 3-5 minutes · also deletes the S3 bucket
-```
-The load balancer and servers are billed by the hour while they exist (a few cents per hour), so always
-destroy when you are done. Keep `terraform.tfstate` and `.terraform/` until after `destroy`, and never commit
-them.
+1. A successful sign-in creates an in-memory session on the serving instance.
+2. Browser heartbeats refresh activity; explicit logout removes the session.
+3. Sessions without a heartbeat expire after the configured TTL, default 600 seconds.
+4. Each instance publishes `ActiveLogins` once per minute to the ASG-wide metric series.
+5. A 60-second `Sum` across samples in that series represents the fleet count when each instance publishes exactly one sample for that minute.
+6. The alarm evaluates that metric and invokes its scaling policy when configured conditions are met.
 
----
+Use `Namespace = Retrograde/Portal` with the `AutoScalingGroupName` dimension for the fleet metric. Do not add the separately published per-instance series to it again. Longer sum periods, duplicate publishers or retries that duplicate samples can overcount. Missing instance samples can undercount.
 
-## 🔄 The service lifecycle, phase by phase
+The reviewed deployment runs one Uvicorn worker per instance. Changing worker/process counts needs coordinated shared session storage and metric publishing; otherwise each process can have separate state and publish duplicate or incomplete counts.
 
-| Phase | What happens | AWS services involved | Why it matters |
-|---|---|---|---|
-| **0. Prepare** | Install Terraform and the AWS CLI, check credentials, confirm the VPC. | IAM (your own user), VPC | Terraform acts as you; it needs permission and a network to build into. |
-| **1. Provision** | `terraform apply` creates the bucket, roles, firewalls, load balancer, launch template, group, alarms. | Terraform, S3, IAM, EC2 (security groups), ALB, ASG, CloudWatch | Everything is created in dependency order, identically every time. |
-| **2. Boot** | The first server starts, runs the boot script, downloads the code, starts the app. | EC2, S3, IAM | A server becomes useful with no manual steps, and so will every future server. |
-| **3. Serve** | The ALB health-checks `/health`; once healthy, candidates reach the site at the ALB address. | ALB, target group, security groups | One stable address; unhealthy servers are never sent traffic. |
-| **4. Observe** | Each server counts signed-in users and publishes `ActiveLogins` every minute. | CloudWatch, IAM | This is the signal AWS cannot produce itself. |
-| **5. Scale out** | The 13th sign-in pushes the Sum above 12; the alarm fires; the policy sets the group to 2 (or 3) servers; the new server boots (Phase 2), passes health checks and joins the ALB. | CloudWatch alarm, scaling policy, ASG, EC2, S3, ALB | Capacity grows with demand, with no human involved. |
-| **6. Scale in** | After users leave (or sessions expire) and the Sum stays below 8 for 5 minutes, the group returns to 1 server. | CloudWatch alarm, scaling policy, ASG | You stop paying for capacity you no longer need. |
-| **7. Tear down** | `terraform destroy` removes everything it created. | Terraform | No leftover resources and no surprise bill. |
+### Timing, routing and session limits
 
-### Scale-out timeline (typical, not guaranteed)
+Scaling is not instantaneous. Publication interval, alarm evaluation periods, cooldown/warmup, instance bootstrapping and ALB health checks all contribute to the delay. The reviewed optional alarm uses two 60-second evaluation periods and the simple policy uses a 300-second cooldown.
 
-```
- 0:00   the 13th candidate signs in             app.py now holds 13 live sessions
- 0:01   the instance reports ActiveLogins = 13   (the badge already shows "Scaling Triggered")
- 1:00   alarm evaluates: Sum 13 is above 12      state: ALARM
- 1:05   scaling policy runs                      desired capacity 1 → 2
- 1:10   Auto Scaling launches instance #2        boots, pulls code from S3, starts the app
- ~4:00  two health checks pass (15 s apart)      the ALB starts sending traffic to #2
- ──────────────────────────────────────────────────────────────────────────────────────
- ~15:00 users leave / sessions expire            Sum below 8 for 5 minutes → back to 1 instance
-```
+Existing sticky sessions generally remain on their original instance. Adding a server does not migrate those sessions or guarantee an even split of active candidates. New clients can use the added capacity. A browser tab closing is not guaranteed to send logout; the heartbeat expiry handles abandoned sessions.
 
-## 💻 Local development
+Candidate deduplication is local to each instance, not a fleet-wide guarantee. Shared session storage is needed for reliable global uniqueness and safe automatic scale-in. Instance replacement or restart can lose the current in-memory sessions.
 
-Run from the **repository root** (the app looks for `templates/` relative to where it starts):
+### Boundary tests for the proposed policy
+
+Test **12 → 13**, **25 → 26**, **38 → 39**, and **41** active candidates after implementing the policy. Maintain distinct candidates and heartbeats, then capture the metric, alarm, scaling activity, desired capacity and healthy target count. Confirm repeated evaluation at a fixed count does not keep adding beyond its intended band.
+
+Also test a direct jump to 41 users, the four-instance maximum, missing metric samples and traffic falling after scale-out. Do not claim automatic scale-in unless a separate safe policy has been implemented and tested.
+
+## Repository guide
+
+| Path | Purpose |
+|---|---|
+| `.github/workflows/` | Python/Terraform validation and deployment automation |
+| `app.py` | FastAPI routes, demonstration data, session tracking and metrics |
+| `requirements.txt` | Python dependencies |
+| `templates/index.html` | Application interface |
+| `static/css/styles.css` | Styles served through the static origin in AWS |
+| `images/` | Application images and, when added, presentation evidence |
+| `scripts/deploy.sh` | Deployment orchestration |
+| `scripts/deploy-remote.sh` | Remote application update, artifact synchronization and health checks |
+| `terraform/main.tf` | Main resources, log group, metric alarms and optional scaling resources |
+| `terraform/github-deploy.tf` | GitHub OIDC and deployment access configuration |
+| `terraform/bootstrap.sh.tftpl` | Instance setup template |
+| `terraform/install-logging.sh` | Agent configuration and application log capture |
+| `terraform/monitoring.tf` | Scoped log-delivery IAM policy and monitoring outputs |
+| `terraform/variables.tf` | Terraform inputs |
+| `terraform/outputs.tf` | Resource names and endpoint outputs |
+| `monitoring-fix/verify-delivery.sh` | Fresh application-event delivery test, if retained from the monitoring patch |
+| `simulate_logins.py` | Application traffic/session simulator |
+| `docs/` | Project guides where present in the checkout |
+| `AWS_SETUP.md` | Additional environment setup instructions |
+
+Keep local state, saved plans, credentials, private keys, `.terraform/`, virtual environments and backups out of Git. Ignore the monitoring patch's `*.before-monitoring` backups too. Retain `.terraform.lock.hcl` in version control. Use a sanitized example variable file for team onboarding; never publish secrets in `terraform.tfvars`.
+
+## Prerequisites and configuration
+
+Required tools: Git, Python compatible with the application dependencies, Terraform compatible with the repository constraints, AWS CLI, and an authenticated AWS identity with appropriate deployment permissions. The instance bootstrap uses Python 3.11 on Amazon Linux 2023. Node/npm is needed only when rebuilding Tailwind assets with the repository's configured build process.
+
+The Terraform configuration expects an existing VPC and matching subnets. Check its lookup filters before deployment. Configure your own account/region values, notification email and budget; do not assume another team's network names exist in your account.
 
 ```bash
 git clone https://github.com/MaxwellMensah/retrograde.git
 cd retrograde
-
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-CW_PUBLISH=false uvicorn app:app --reload --port 8000
+aws sts get-caller-identity
 ```
 
-Open **http://localhost:8000**. `CW_PUBLISH=false` keeps the login counts local instead of trying to reach
-AWS. They are still visible at `/api/traffic-status`.
+Use the correct AWS profile for the intended account. If using named profiles, set `AWS_PROFILE` to your configured profile name before AWS/Terraform commands.
 
-**Editing the frontend:** the page's Tailwind CSS is compiled into the file (no CDN). If you add Tailwind
-classes the page has not used before, rebuild the stylesheet and replace the inlined block:
+### Important settings
+
+| Setting | Meaning |
+|---|---|
+| `aws_region` | Deployment region; demonstrated in `us-east-1` |
+| `name_prefix` | Project resource naming prefix |
+| Instance type | Latest shared plan uses `t3.small` |
+| `enable_login_scaling` | Enables the optional login alarm and policy where defined |
+| `scale_threshold` | Reviewed optional policy's login threshold; not a complete capacity-band policy |
+| ASG `min_size`, initial `desired_capacity`, `max_size` | Target values: **1, 1, 4**. Set in the ASG resource or through variables exposed by the current checkout; last verified deployed maximum was 2 |
+| `budget_limit_amount` | Monthly alert budget; latest shared plan showed USD 2 |
+| `budget_alert_email` | Destination for budget notifications |
+| `acm_certificate_arn` | Optional custom-domain certificate; empty for the demonstrated CloudFront default hostname |
+
+Application environment:
+
+| Variable | Reviewed default / purpose |
+|---|---|
+| `SCALE_THRESHOLD` | `12`; application status threshold, which should agree with the selected scaling design |
+| `SESSION_TTL_SECONDS` | `600`; inactive-session expiry |
+| `CW_PUBLISH` | Set to `false` locally; enabled for deployed metric publishing |
+| `CW_NAMESPACE` | `Retrograde/Portal` |
+| `ASG_NAME` | Actual group name discovered/configured at bootstrap |
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | SDK/CLI deployment region |
+
+## Local development
+
+From the repository root:
 
 ```bash
-echo '@tailwind base;@tailwind components;@tailwind utilities;' > input.css
-npx tailwindcss@3.4.17 -i input.css --content templates/index.html --minify -o tailwind.min.css
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+CW_PUBLISH=false python -m uvicorn app:app --reload --port 8000
 ```
 
-**Simulating traffic locally or on AWS:**
+Open `http://localhost:8000`. If Uvicorn is not included in the current dependency list, install it in the virtual environment and add it to the project's dependency specification.
+
+Use synthetic demo accounts defined in the current `app.py`. The earlier account list included `student1` through `student40` with `studentN@retrograde-demo.com`; verify the list before use and provide an additional distinct synthetic account for a 41-candidate test if needed.
+
+Check simulator arguments with `python simulate_logins.py --help`. Where supported:
 
 ```bash
 python simulate_logins.py --url http://localhost:8000 --users 13
 ```
 
----
+A local run with `CW_PUBLISH=false` tests application behavior; it does not test AWS scale-out. A cloud scaling test must use the deployed endpoint, publish metrics, preserve per-user cookies and maintain active heartbeats.
 
-## ⚙️ Configuration reference
+## Deploying the AWS environment
 
-Environment variables read by `app.py` (all optional; Terraform sets the ones that matter on AWS):
+Run these commands from the repository root:
 
-| Variable | Default | Meaning |
+```bash
+terraform -chdir=terraform init
+terraform -chdir=terraform fmt -check
+terraform -chdir=terraform validate
+terraform -chdir=terraform plan -out=deployment.tfplan
+terraform -chdir=terraform apply deployment.tfplan
+terraform -chdir=terraform output
+```
+
+Review the plan before applying. After an intentional destroy, a full create plan is expected. For an existing deployment, an unexpected full create plan may indicate the wrong backend/workspace or missing state; resolve that before proceeding.
+
+A Git branch is not a separate AWS environment. Preserve state between runs and use the intended backend/workspace. Saved plan files and state may contain sensitive values; do not commit them.
+
+Bootstrap downloads application artifacts, prepares the Python environment, configures nginx/systemd, and installs the CloudWatch agent. Wait for healthy ALB targets and CloudFront deployment before testing the URL.
+
+To obtain the current hostname:
+
+```bash
+terraform -chdir=terraform output -raw cloudfront_domain_name
+```
+
+The monitoring-enabled template configures new instances automatically. Existing instances that have not been refreshed need the logging installer run separately after its IAM policy and log group exist. Installing logging restarts the application.
+
+## GitHub Actions and application releases
+
+The project uses GitHub for version control and Actions for validation/deployment. The deployment workflow was reported working after resolving OIDC trust and SSH configuration problems.
+
+Release workflow:
+
+1. Make changes on a feature branch and open a pull request.
+2. Run Python checks and Terraform format/validation checks.
+3. Have a teammate review the change.
+4. Merge to `main` and follow the configured deployment workflow.
+5. Confirm remote health checks succeed and the application shows the new release.
+
+GitHub obtains AWS access through the configured OIDC trust relationship. SSH-based deployment uses the repository's configured credentials and host verification. Keep private keys and tokens in GitHub secrets; never commit them or disable host verification to bypass a mismatch.
+
+The reviewed remote script pulls `main`, installs dependencies, synchronizes static/application artifacts to S3 and restarts the application. It preserves the separate logging drop-in. After an environment rebuild, update deployment values derived from Terraform outputs and the current instance/host key.
+
+**Multiple-instance release requirement:** updating one EC2 host does not update every running ASG instance. Before using four instances, ensure releases reach all healthy hosts or use a controlled launch-template/instance-refresh strategy. Synchronizing S3 helps replacement instances boot with current code but does not update already running processes.
+
+Infrastructure application is a separate operation unless the current workflow explicitly runs `terraform apply`. A passing validation job alone does not deploy infrastructure or prove application health.
+
+## Application lifecycle and API
+
+1. CloudFront serves the interface and cached static assets.
+2. A candidate submits the demonstration identity fields.
+3. FastAPI creates a tracked session and returns its identifiers.
+4. The interface requests the candidate's grade breakdown.
+5. Heartbeats refresh activity, and the interface polls capacity information.
+6. Explicit logout or TTL expiry removes active-session state.
+7. Metrics and logs support monitoring and optional scaling.
+
+| Method | Endpoint | Purpose |
 |---|---|---|
-| `SCALE_THRESHOLD` | `12` | Scaling is "triggered" above this many signed-in users |
-| `SESSION_TTL_SECONDS` | `600` | A login with no heartbeat for this long stops counting |
-| `ASG_NAME` | *(empty)* | Auto Scaling Group name: metric dimension and fleet-size lookup |
-| `CW_PUBLISH` | `true` | Set `false` locally to skip CloudWatch |
-| `CW_NAMESPACE` | `Retrograde/Portal` | CloudWatch namespace |
-| `AWS_REGION` | *(from the instance)* | Region for the AWS calls |
-| `INSTANCE_ID`, `AZ` | *(auto-detected)* | Override the detected instance details (local testing) |
+| GET | `/` | Application interface |
+| POST | `/api/login` | Demonstration sign-in and session creation |
+| POST | `/api/session/heartbeat` | Refresh tracked session activity |
+| POST | `/api/session/logout` | Remove tracked session |
+| GET | `/api/grades/{student_id}` | Demonstration grade data; reviewed implementation needs authorization enforcement |
+| GET | `/api/traffic-status` | Activity and instance/capacity information |
+| GET | `/health` | Application/target-group health check |
 
----
+## Monitoring and log delivery
 
-## 👥 Presentation demo accounts
-
-You can use the following quick-test credentials on the sign-in page:
-
-* **Candidate 1:** `maxwell` / `maxwell@gmail.com` (profile gender M, shows the Shrek picture)
-* **Candidate 2:** `esther` / `esther@gmail.com` (profile gender F, shows the Fiona picture)
-* **Candidate 3:** `student1` / `student1@retrograde-demo.com`
-
-`student1` to `student40` all exist (`studentN` / `studentN@retrograde-demo.com`). `simulate_logins.py` uses
-them to create load.
-
----
-
-## 🛟 Troubleshooting
-
-| Symptom | Likely cause and fix |
+| Signal | Configuration |
 |---|---|
-| `terraform plan` cannot find the VPC | The `Name` tag does not match `vpc_name`. Check it, or pass `-var vpc_name=...`. |
-| "needs subnets in at least 2 Availability Zones" | The VPC does not have 2 public subnets in different zones. Pass `-var 'subnet_ids=[...]'`. |
-| Role creation denied (IAM) | Your account blocks creating roles. Pass `-var instance_profile_name=<existing profile>`; it needs S3 read and `cloudwatch:PutMetricData`. |
-| `apply` waits about 15 minutes, then fails | The first server never became healthy. Open it with Session Manager (EC2 → Connect) and read `/var/log/retrograde-bootstrap.log`, then run `systemctl status retrograde` and `journalctl -u retrograde -n 50`. |
-| 502 or 503 right after `apply` | Servers are still booting (allow about 5 minutes) or are failing the health check. Check the target group's health status. |
-| Alarm stuck on "Insufficient data" | Metrics are not arriving. Check the instance log for `CloudWatch <- active_logins=`; confirm `boto3` is installed, `CW_PUBLISH` is not `false`, and the role allows `PutMetricData`. |
-| Badge shows a lower count than expected after scale-out | Each instance shows its own count; CloudWatch's Sum is the fleet-wide number. |
-| Profile picture shows initials instead of Shrek or Fiona | An old page or old `app.py` is being served. Update both, then run the instance refresh above. |
-| Changes do not appear after redeploying | Running servers keep old code until replaced. Run the instance refresh command. |
+| EC2 CPU | Average CPU above 80% for two 300-second periods in the reviewed alarm |
+| Target 5xx percentage | Above 5% for one 60-second period |
+| Application metrics | `ActiveLogins` and `LoginEvents` under `Retrograde/Portal` |
+| Log group | `/aws/ec2/retrograde-app` |
+| Log retention | Seven days |
+| Streams per instance | `INSTANCE_ID/application`, `INSTANCE_ID/nginx-access`, `INSTANCE_ID/nginx-error` |
 
----
+The corrected error-rate expression is:
 
-## 🔐 Security notes and known limits
+```text
+IF(requests > 0, 100 * FILL(errors, 0) / requests, 0)
+```
 
-* **HTTP only.** The demo is served over plain HTTP on port 80, so browsers show "Not secure". HTTPS needs a
-  custom domain and a certificate (AWS Certificate Manager) on the load balancer.
-* **Least privilege.** Servers accept traffic only from the load balancer; the S3 bucket is private; the IAM
-  role can only read the app bundle, publish to one CloudWatch namespace and read the group size. IMDSv2 is
-  required.
-* **Demo data lives in memory.** Students and sessions are held in `app.py`, not a database, and demo
-  credentials are public. A production version would use a database (for example RDS or DynamoDB) and real
-  authentication.
-* **Counts are per instance.** Stickiness keeps them accurate; with it disabled a user could be counted
-  twice. A shared store (Redis or DynamoDB) would remove this dependency.
-* **Timing.** Metrics are reported once a minute, so allow 1-2 minutes between the 13th sign-in and the alarm.
-* **Cost.** The load balancer and servers are billed hourly. Destroy the environment when you are done.
+`errors` is `HTTPCode_Target_5XX_Count` and `requests` is `RequestCount`, both `Sum` over 60 seconds with matching `LoadBalancer` dimensions. Six errors in 100 requests is 6% and breaches; five in 100 is exactly 5% and does not breach; six in 200 is 3% and does not breach.
 
-The manual, step-by-step version of the AWS setup (the same resources, created with the CLI) is kept in
-[`AWS_SETUP.md`](AWS_SETUP.md).
+This monitors **target-generated** errors. ALB-generated errors use separate metrics and are not included. A low-traffic sample can breach with a single error; choose evaluation windows appropriate to the demonstration.
 
----
+An alarm being `OK` is not proof of a tested alarm transition or email delivery. Notification delivery requires configured actions and confirmed subscriptions. The supplied console screenshots confirm both alarms show **No actions**. The shown `Default_CloudWatch_Alarms_Topic` has **0 subscriptions**. Creating that topic alone does not configure alarm notifications. Attach the intended topic to each alarm, create and confirm an appropriate subscription, and test delivery before marking notifications complete. Keep those changes in Terraform so they survive a rebuild.
 
-## 📄 License
+### Verifying fresh log delivery
 
-Distributed under the **MIT License**. See `LICENSE` for more information.
+From the repository root with an authenticated AWS CLI identity permitted to read logs:
+
+```bash
+CLOUDFRONT_DOMAIN=$(terraform -chdir=terraform output -raw cloudfront_domain_name)
+bash monitoring-fix/verify-delivery.sh \
+  us-east-1 \
+  '/aws/ec2/retrograde-app' \
+  "https://$CLOUDFRONT_DOMAIN"
+```
+
+Adjust the region/group if you changed the configuration. The verification script requests a unique nonexistent route and searches the **application** log stream for its marker. HTTP 404 is expected. A `PASS` proves a fresh request event arrived in CloudWatch, not merely that the group exists. Repeat per instance or inspect each instance's fresh stream when testing a larger fleet.
+
+## Verification and evidence
+
+The following evidence was captured on **5 November 2026**. Each caption distinguishes a visible configuration or observed result from behavior that the screenshot does not test.
+
+| Check | Evidence | Conclusion |
+|---|---|---|
+| Application log delivery | Verification script returns PASS and identifies an application stream | Fresh test request reached CloudWatch for the displayed instance |
+| Retention | Log-group details show `1 week` | Seven-day retention confirmed |
+| Target 5xx alarm | Percentage label and threshold above 5 for one datapoint in one minute | Deployed percentage threshold confirmed; the graph does not display the underlying expression |
+| CPU alarm | Above 80 for two datapoints within ten minutes | Deployed CPU condition confirmed |
+| Alarm notifications | Both alarms show `No actions`; SNS topic shows zero subscriptions | Notification configuration remains incomplete for this path |
+| Target health | One target is healthy on HTTP port 80 | One healthy application target confirmed at capture time |
+| ASG capacity | Minimum 1, desired 1, maximum 2, one healthy instance | Current capacity confirmed; four-instance policy remains proposed |
+| S3 artifacts | `app/`, `images/`, `static/` prefixes visible | Artifact layout confirmed; this is not proof of OAC restrictions or public-access denial |
+| Landing page | Application hero renders | Visual interface confirmed; screenshot alone does not test redirects or the full candidate journey |
+| CI/CD and Trello | Previously reported complete/working by the team | Add the successful Actions run and completed-board evidence for submission |
+
+### Landing page
+
+![Retrograde landing page](images/evidence/landing-page.png)
+
+The deployed interface displays the academic portal hero. The marketing text in the screenshot is not evidence of uninterrupted high availability; the captured ASG is running one instance.
+
+### Fresh application log delivery
+
+![Successful fresh application log delivery verification](images/evidence/log-delivery-pass.png)
+
+The verification script deliberately requests a nonexistent URL, so **HTTP 404 is expected**. Its PASS result identifies a fresh marker in the application stream. This proves log delivery for that instance; it is not an alarm-trigger test.
+
+### Seven-day retention
+
+![CloudWatch log group showing one week retention](images/evidence/log-retention.png)
+
+`/aws/ec2/retrograde-app` shows retention of **1 week** and three log streams. Stream existence alone is insufficient to prove delivery; the separate marker test above supplies that evidence.
+
+### Deployed alarms
+
+![CloudWatch alarm conditions and action configuration](images/evidence/cloudwatch-alarms.png)
+
+Both alarms are **OK** at capture time. The list confirms the target 5xx and CPU conditions and shows **No actions** for both. It does not demonstrate an ALARM transition or notification delivery.
+
+![Target 5xx percentage alarm graph](images/evidence/target-5xx-alarm.png)
+
+The target error alarm is labeled as a percentage and configured above **5% for one datapoint within one minute**. The implementation uses `100 × target 5xx / requests > 5%`, with zero/missing-data handling as shown in the monitoring section. Capture the metric-math expression view if expression-level console evidence is required; it is not visible in this graph.
+
+### Healthy target and ASG capacity
+
+![One healthy EC2 target on HTTP port 80](images/evidence/healthy-target.png)
+
+The target group shows **1 healthy target**, **0 unhealthy targets**, and **HTTP:80**. This is health evidence at one point in time, not proof of failover or replacement behavior.
+
+![ASG minimum one desired one maximum two](images/evidence/asg-capacity.png)
+
+The ASG shows minimum **1**, desired **1**, maximum **2**, and **1/1 healthy**. Two Availability Zones are configured, but only one application instance is running. The proposed 13/26/39-login capacity bands still require a policy change and boundary tests.
+
+### S3 artifact layout
+
+![Application images and static artifact prefixes in S3](images/evidence/s3-artifacts.png)
+
+The bucket contains `app/`, `images/` and `static/`. To prove private asset delivery separately, retain OAC/bucket-policy evidence and results showing CloudFront asset success with direct anonymous S3 access denied.
+
+### Notification configuration still to complete
+
+![SNS topic showing zero subscriptions](images/evidence/sns-subscriptions.png)
+
+The topic exists, but **Subscriptions (0)** is visible. Combined with the alarm list's **No actions**, these screenshots do not support a claim that alarm emails are working. A successful SNS test message proves the subscription path; an alarm-triggered notification test additionally proves the alarm-to-topic connection. Document the test method rather than treating either as proof of a real CPU/5xx breach.
+
+### Remaining evidence for the final handover
+
+- Successful GitHub Actions deployment run and post-deployment health result.
+- Completed Trello board screenshot.
+- HTTP-to-HTTPS redirect response and static asset response evidence.
+- Any tested replacement/scaling activity, with the exact capacity configuration used.
+- Proposed four-instance policy boundary tests after implementation.
+- Alarm action/subscription configuration and notification receipt after setup.
+
+All embedded images use the supplied filenames under `images/evidence/`; copy that directory together with this README into the repository. The earlier repository listing showed `docs/`; these AWS screenshots do not establish the current repository directory layout. Keep the repository-guide entry aligned with the actual checkout rather than introducing a new `documentation/` directory solely for the README.
+
+## Security and known limitations
+
+- **Demonstration authentication:** matching a username/email pair is not strong identity verification. The reviewed grades route looks up a student ID without validating the requesting session. Add server-side authentication and authorization before handling private records.
+- **Volatile sessions:** in-memory tracking is lost on restart or replacement and is not shared across instances. Sticky sessions reduce routing changes but do not provide durable state.
+- **HTTPS scope:** browser-to-CloudFront is encrypted; reviewed origin connections use HTTP. Add origin TLS when implementing end-to-end encryption.
+- **Origin restrictions:** EC2 application ingress is limited to the ALB security group. ALB ingress uses CloudFront's managed origin-facing prefix list. That list covers CloudFront generally; it does not identify only this distribution. A distribution-specific origin secret/header check is an additional hardening option.
+- **Private static storage:** S3 public access is blocked and asset access is granted through OAC for this distribution. Direct public S3 requests should fail while CloudFront asset URLs succeed.
+- **Administrative access:** SSM is available where configured. The reviewed release scripts also use SSH; describe and audit any workflow-managed SSH rule rather than claiming exclusive SSM access.
+- **IAM scope:** runtime and deployment permissions have different needs. Reviewed deployment code writes artifacts to S3, so the full instance permission set should not be described as read-only.
+- **Logging:** never log credentials, private keys or sensitive grade/session data. Seven-day retention limits storage duration; local application log rotation uses copytruncate, which has a small possible loss window during rotation.
+- **Availability:** an ASG with one desired instance provides recovery capability, not a guarantee of uninterrupted service.
+
+## Troubleshooting
+
+| Symptom | Checks |
+|---|---|
+| Unhealthy ALB targets | `/health`, nginx status, FastAPI on localhost:8000, security-group source/port, target registration and bootstrap completion |
+| No application logs | Agent status, `/var/log/retrograde/application.log`, log-write IAM permissions, correct group/region and outbound CloudWatch Logs connectivity |
+| No login metrics | `CW_PUBLISH`, ASG name, namespace, `cloudwatch:PutMetricData`, heartbeat activity and publisher logs |
+| No scale-out | Policy enabled, correct metric dimensions, alarm evaluation, ASG maximum, warmup/cooldown and scaling activity failure messages |
+| More scale-outs than expected | A global `+1` alarm is not the proposed capacity-band policy; inspect repeated alarm actions and current desired capacity |
+| New instance has old code | S3 bootstrap artifacts, release synchronization and launch-template version |
+| Different versions across instances | Single-host release scripts versus whole-ASG deployment strategy |
+| Static asset 403 | OAC, bucket policy distribution ARN, object key and CloudFront behavior |
+| Static asset stale | Asset caching TTL, versioned filenames or an intentional invalidation |
+| Redirect failure | CloudFront viewer protocol policy and the actual requested hostname; do not open extra EC2 ports as a workaround |
+| GitHub authentication/SSH failure | OIDC trust subject/audience, key format, current host and verified host key |
+| Full create plan for an existing deployment | Correct account, directory, workspace/backend and state file |
+
+On EC2:
+
+```bash
+sudo systemctl status retrograde nginx amazon-cloudwatch-agent --no-pager
+sudo tail -n 50 /var/log/retrograde/application.log
+sudo tail -n 50 /var/log/retrograde-bootstrap.log
+sudo tail -n 50 /opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1/health
+```
+
+Application stdout/stderr now goes to the application log file. `journalctl -u retrograde` remains useful for service lifecycle failures but no longer contains all application output.
+
+## Costs and cleanup
+
+This is a budget-conscious demonstration, not a guarantee of zero charges. Instance count, instance size, load balancing, distributions, traffic, storage, logs and custom metrics affect costs. Four instances can increase compute usage substantially compared with one; scale-in is not automatic in the reviewed session design.
+
+The latest shared plan specified a **USD 2 monthly budget** with an alert above **80% of actual spend**. Adjust `budget_limit_amount` if the intended budget is USD 1. Budget notifications do not cap or stop expenditure.
+
+After saving necessary evidence and data, remove the environment from the repository root:
+
+```bash
+terraform -chdir=terraform plan -destroy
+terraform -chdir=terraform destroy
+```
+
+S3 is configured with `force_destroy = false`; unmanaged objects can prevent bucket deletion. Inspect and back up anything needed before removing remaining objects. Do not delete Terraform state as a substitute for destroying resources. Keep state available until cleanup completes and check for resources created outside this configuration.
+
+The VPC/subnets looked up as data sources are not owned by this deployment and are not removed by its destroy operation. CloudFront removal can take time. Logs managed by the configuration may also be removed; export required evidence before teardown.
+
+## Presentation and project handover
+
+The showcase follows the required presentation topics:
+
+1. Explain the customer problem and the academic portal's role.
+2. Walk through CloudFront → ALB → EC2 and the private S3 asset route.
+3. Explain the security boundaries and known limitations accurately.
+4. Demonstrate a GitHub Actions deployment and visible application change.
+5. Show the completed Trello board and team task history.
+6. Open the current HTTPS endpoint and demonstrate a candidate journey.
+7. Discuss Git/OIDC/SSH/deployment blockers and their resolutions.
+8. Explain lessons learned and future improvements.
+
+Handover includes source code, setup instructions, architecture diagram, completed Trello evidence, current demo URL, presentation slides and test evidence. A recorded demonstration is optional. Before presenting, replace screenshots and URLs from earlier destroyed deployments and check that the landing page is reachable.
+
+## Future improvements
+
+1. Implement and test the proposed four-instance scaling bands.
+2. Enforce authenticated, authorized access to candidate records.
+3. Move sessions and global active-user counts into shared storage.
+4. Make deployment consistent across every active instance.
+5. Introduce controlled scale-in with session draining and suitable cooldowns.
+6. Add origin TLS, distribution-specific origin controls and appropriate abuse protection.
+7. Attach alarm notification actions, confirm SNS subscriptions and test receipt; add separate ALB-generated error monitoring.
+8. Measure performance under the 41-candidate workload before making capacity claims.
+9. Use a protected shared Terraform backend and documented recovery process for team collaboration.
+
+## References and license
+
+- [EC2 Auto Scaling step and simple policies](https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-scaling-simple-step.html)
+- [Target tracking metric requirements](https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-scaling-target-tracking.html)
+- [Application Load Balancer metrics](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-cloudwatch-metrics.html)
+- [CloudWatch agent configuration](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Agent-Configuration-File-Details.html)
+- [CloudFront distribution settings and certificates](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesGeneral.html)
+
+Distributed under the MIT License, as stated in the project's `LICENSE` file.
