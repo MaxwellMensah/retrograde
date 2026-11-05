@@ -57,7 +57,7 @@ jobs:
         run: terraform init -backend=false -input=false
 
       - name: Terraform Format
-        run: terraform fmt -check -recursive
+        run: terraform fmt -check -diff -recursive
 
       - name: Terraform Validate
         run: terraform validate
@@ -78,7 +78,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       EC2_HOST: ${{ vars.EC2_HOST }}
       EC2_USER: ec2-user
-      EC2_SSH_SG_ID: ${{ vars.EC2_SSH_SG_ID }}
+      EC2_APP_SG_NAME: ${{ vars.EC2_APP_SG_NAME || 'retrograde-web-sg' }}
 
     steps:
       - name: Check out main
@@ -115,33 +115,9 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Allow SSH only from this runner
-        id: ingress
-        run: |
-          set -euo pipefail
-          
-          # Discover security group dynamically by its Name tag
-          SG_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=tag:Name,Values=retrograde-web-sg" \
-            --query "SecurityGroups[0].GroupId" \
-            --output text)
-            
-          if [ -z "$SG_ID" ] || [ "$SG_ID" = "None" ]; then
-            echo "Error: Could not discover security group dynamically!"
-            exit 1
-          fi
-          echo "Discovered active Security Group ID: $SG_ID"
-
-          RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
-          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
-          
-          RULE_ID=$(aws ec2 authorize-security-group-ingress \
-            --group-id "$SG_ID" \
-            --protocol tcp --port 22 --cidr "$RUNNER_IP/32" \
-            --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text)
-          
-          echo "rule_id=$RULE_ID" >> "$GITHUB_OUTPUT"
-          echo "sg_id=$SG_ID" >> "$GITHUB_OUTPUT"
+      - name: Resolve and verify deployment target
+        id: target
+        run: python3 scripts/resolve-deployment-target.py
 
       - name: Prepare verified SSH credentials
         env:
@@ -164,7 +140,6 @@ jobs:
           if key.startswith("\"") and key.endswith("\""):
               key = key[1:-1].strip()
           
-          print(f"Sanitized key length: {len(key)} characters")
           
           with open(os.path.expanduser("~/.ssh/retrograde_deploy"), "w") as f:
               f.write(key + "\n")
@@ -172,6 +147,30 @@ jobs:
           
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/retrograde_deploy" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -P '' -f "$HOME/.ssh/retrograde_deploy" > /dev/null
+          ssh-keygen -F "$EC2_HOST" -f "$HOME/.ssh/known_hosts" > /dev/null || {
+            echo "No verified known_hosts entry for EC2_HOST. Update EC2_SSH_KNOWN_HOSTS from a trusted source."
+            exit 1
+          }
+
+      - name: Allow SSH only from this runner
+        id: ingress
+        env:
+          SG_ID: ${{ steps.target.outputs.sg_id }}
+        run: |
+          set -euo pipefail
+          
+          RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
+          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
+          
+          RULE_ID=$(aws ec2 authorize-security-group-ingress \
+            --group-id "$SG_ID" \
+            --protocol tcp --port 22 --cidr "$RUNNER_IP/32" \
+            --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text)
+          
+          [[ "$RULE_ID" =~ ^sgr-[0-9a-f]+$ ]]
+          echo "rule_id=$RULE_ID" >> "$GITHUB_OUTPUT"
+          echo "sg_id=$SG_ID" >> "$GITHUB_OUTPUT"
 
       - name: SSH into EC2 and pull latest main
         env:
@@ -185,7 +184,7 @@ jobs:
           SG_ID: ${{ steps.ingress.outputs.sg_id }}
         run: |
           aws ec2 revoke-security-group-ingress \
-            --group-id "${SG_ID:-$EC2_SSH_SG_ID}" --security-group-rule-ids "$RULE_ID"
+            --group-id "$SG_ID" --security-group-rule-ids "$RULE_ID"
 
       - name: Delete runner SSH key
         if: always()
