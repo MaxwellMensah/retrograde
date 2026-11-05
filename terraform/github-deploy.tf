@@ -52,6 +52,7 @@ resource "aws_iam_role_policy" "github_deploy_policy" {
         Action = [
           "s3:PutObject",
           "s3:GetObject",
+          "s3:ListBucket",
           "s3:AbortMultipartUpload"
         ]
         Resource = [
