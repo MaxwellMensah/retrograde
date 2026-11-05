@@ -74,7 +74,6 @@ jobs:
     timeout-minutes: 20
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-      ASG_NAME: ${{ vars.ASG_NAME || 'retrograde-asg' }}
 
     steps:
       - name: Checkout repository
@@ -92,14 +91,12 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Dynamically construct your exact S3 bucket name
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           REGION="${AWS_REGION:-us-east-1}"
           S3_BUCKET="retrograde-static-assets-${ACCOUNT_ID}-${REGION}"
           
           echo "Using dynamically constructed S3 bucket: $S3_BUCKET"
           
-          # Sync files matching Terraform's expected key structure (app/, static/, images/)
           aws s3 cp app.py s3://$S3_BUCKET/app/app.py
           aws s3 cp requirements.txt s3://$S3_BUCKET/app/requirements.txt
           aws s3 sync templates/ s3://$S3_BUCKET/app/templates/
@@ -108,7 +105,18 @@ jobs:
 
       - name: Trigger Auto Scaling Group Instance Refresh
         run: |
-          echo "Initiating rolling instance refresh for ASG: $ASG_NAME"
+          set -euo pipefail
+          
+          # Automatically discover the timestamped ASG name starting with 'retrograde-asg'
+          ASG_NAME=$(aws autoscaling describe-auto-scaling-groups --query "AutoScalingGroups[?starts_with(AutoScalingGroupName, 'retrograde-asg')].AutoScalingGroupName | [0]" --output text)
+          
+          if [ -z "$ASG_NAME" ] || [ "$ASG_NAME" == "None" ]; then
+            echo "Error: Could not automatically locate the Auto Scaling Group."
+            exit 1
+          fi
+          
+          echo "Successfully discovered ASG: $ASG_NAME"
+          
           aws autoscaling start-instance-refresh \
             --auto-scaling-group-name "$ASG_NAME" \
             --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}'
