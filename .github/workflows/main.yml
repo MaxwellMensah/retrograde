@@ -92,17 +92,14 @@ jobs:
         run: |
           set -euo pipefail
           
-          # Automatically discover the S3 bucket starting with 'retrograde'
-          S3_BUCKET=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 'retrograde')].Name | [0]" --output text)
+          # Dynamically construct the exact bucket name using your AWS Account ID and Region[cite: 5]
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${AWS_REGION:-us-east-1}"
+          S3_BUCKET="retrograde-static-assets-${ACCOUNT_ID}-${REGION}"
           
-          if [ -z "$S3_BUCKET" ] || [ "$S3_BUCKET" == "None" ]; then
-            echo "Error: Could not automatically locate the Retrograde S3 bucket."
-            exit 1
-          fi
+          echo "Using dynamically constructed S3 bucket: $S3_BUCKET"
           
-          echo "Successfully discovered S3 bucket: $S3_BUCKET"
-          
-          # Sync files using the dynamically found bucket name
+          # Sync files using the constructed bucket name
           aws s3 cp app.py s3://$S3_BUCKET/app.py
           aws s3 sync static/ s3://$S3_BUCKET/static/
           aws s3 sync templates/ s3://$S3_BUCKET/templates/
