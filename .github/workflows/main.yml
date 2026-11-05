@@ -138,16 +138,27 @@ jobs:
           test -n "$SSH_KNOWN_HOSTS"
           install -m 700 -d "$HOME/.ssh"
           
-          # Clean carriage returns and ensure proper formatting
           python3 -c '
-          import os
-          key = os.environ["SSH_PRIVATE_KEY"].replace("\r\n", "\n").strip()
+          import os, sys
+          raw_key = os.environ.get("SSH_PRIVATE_KEY", "")
+          if not raw_key.strip():
+              print("Error: SSH_PRIVATE_KEY is empty!")
+              sys.exit(1)
+          
+          # Clean Windows line endings and trim whitespace/accidental quotes
+          key = raw_key.replace("\r\n", "\n").strip()
+          if key.startswith("\"") and key.endswith("\""):
+              key = key[1:-1].strip()
+          
+          print(f"Sanitized key length: {len(key)} characters")
+          
           with open(os.path.expanduser("~/.ssh/retrograde_deploy"), "w") as f:
               f.write(key + "\n")
           '
           
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/retrograde_deploy" "$HOME/.ssh/known_hosts"
+
 
       - name: SSH into EC2 and pull latest main
         env:
