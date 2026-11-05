@@ -39,7 +39,7 @@ resource "aws_iam_role" "github_deploy" {
   })
 }
 
-# Allows the workflow to temporarily permit SSH from its runner.
+# Allows the workflow to temporarily permit SSH from its runner and discover security groups.
 resource "aws_iam_role_policy" "github_ssh_access" {
   role = aws_iam_role.github_deploy.id
 
@@ -48,10 +48,11 @@ resource "aws_iam_role_policy" "github_ssh_access" {
     Statement = [{
       Effect = "Allow"
       Action = [
+        "ec2:DescribeSecurityGroups",
         "ec2:AuthorizeSecurityGroupIngress",
         "ec2:RevokeSecurityGroupIngress"
       ]
-      Resource = aws_security_group.web.arn
+      Resource = "*"
     }]
   })
 }
