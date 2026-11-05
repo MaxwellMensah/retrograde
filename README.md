@@ -1,30 +1,11 @@
 # Retrograde — Academic Performance Portal
 
-Across the country, educational institutions and professional certifying bodies—including Linux Institute, Database Foundation, and HashiCorp—face severe operational bottlenecks when processing and delivering raw examination scores to students.
+Retrograde is a demonstration academic performance portal built with **FastAPI**, a **Tailwind CSS** interface and **AWS infrastructure managed by Terraform**. Candidates can sign in with demonstration accounts, view weighted module results and explore the project interface.
 
-Traditionally, accessing academic transcripts and certification results requires students to physically travel to regional educational complexes. This outdated model creates three critical challenges:
-
-- Physical & Operational Friction: In-person distribution leads to massive queues, administrative burden, high travel costs for students, and delayed access to critical academic credentials.
-
-- Fragmented Partner Ecosystem: External certification vendors lack a single, unified, and secure portal to upload raw student assessment scores for automated grading, processing, and distribution.
-
-- Severe Availability & Performance Bottlenecks: Legacy systems suffer from slow page load times, security vulnerabilities, and frequent downtime during high-concurrency national result releases, when thousands of students log in simultaneously.
-
-Retrograde addresses these challenges by establishing a centralized, high-availability Cloud Ecosystem on AWS. The platform provides a secure, self-healing web portal that ingests raw scores from external certifying bodies, converts them into standardized transcripts, and delivers instant digital access to students nationwide.
+The cloud deployment demonstrates HTTPS delivery through CloudFront, load balancing, instance health recovery, private static-asset storage, GitHub Actions deployment and centralized application logging. Its next scaling objective is to accommodate **up to 41 concurrent active candidates**, with **a maximum of four application instances** under the policy described below.
 
 
-## Technical Challenges Addressed
-From a cloud engineering and DevOps perspective, building a platform to support nationwide result releases requires solving common infrastructure failure modes:
-
-- Inconsistent Scalability: Handling massive traffic surges during nationwide result releases without over-provisioning infrastructure during idle periods.
-
-- Security & Access Control: Securing static assets, protecting user records, and enforcing least-privilege network access to prevent unauthorized data exposure.
-
-- Manual & Fragile Deployments: Transitioning away from ad-hoc server configurations toward fully automated, reproducible Infrastructure-as-Code (IaC) and self-healing CI/CD pipelines.
-
-- Observability Deficits: Eliminating blind spots during traffic spikes by streaming application metrics, active login indicators, and centralizing system logs.
-
-> **Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
+**Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
 
 
 - **Repository:** [MaxwellMensah/retrograde](https://github.com/MaxwellMensah/retrograde)
@@ -58,14 +39,46 @@ The environment may be destroyed between demonstrations to control costs. Recrea
 
 ## Problem and objectives
 
-Across the country, educational institutions and professional certifying bodies, including the Linux Institute, Database Foundation, and HashiCorp, face severe operational bottlenecks when processing and delivering raw examination scores to students.
+Across the country, educational institutions and professional certifying bodies, including Linux Institute, Database Foundation, and HashiCorp, face severe operational bottlenecks when processing and delivering raw examination scores to students.
 Traditionally, accessing academic transcripts and certification results requires students to physically travel to regional educational complexes. This outdated model creates three critical challenges:
 
 1. Physical & Operational Friction: In-person distribution leads to massive queues, administrative burden, high travel costs for students, and delayed access to critical academic credentials.
+
 2. Fragmented Partner Ecosystem: External certification vendors lack a single, unified, and secure portal to upload raw student assessment scores for automated grading, processing, and distribution.
+
 3. Severe Availability & Performance Bottlenecks: Legacy systems suffer from slow page load times, security vulnerabilities, and frequent downtime during high-concurrency national result releases, when thousands of students log in simultaneously.
 
-Retrograde addresses these challenges by establishing a centralized, high-availability Cloud Ecosystem on AWS. The platform provides a secure, self-healing web portal that ingests raw scores from external certifying bodies, converts them into standardized transcripts, and delivers instant digital access to students nationwide.
+**Retrograde** addresses these challenges by establishing a centralized, high-availability Cloud Ecosystem on AWS. The platform provides a secure, self-healing web portal that ingests raw scores from external certifying bodies, converts them into standardized transcripts, and delivers instant digital access to students nationwide.
+
+## Technical Challenges Addressed
+From a cloud engineering and DevOps perspective, building a platform to support nationwide result releases requires solving common infrastructure failure modes:
+
+- Inconsistent Scalability: Handling massive traffic surges during nationwide result releases without over-provisioning infrastructure during idle periods.
+
+- Security & Access Control: Securing static assets, protecting user records, and enforcing least-privilege network access to prevent unauthorized data exposure.
+
+- Manual & Fragile Deployments: Transitioning away from ad-hoc server configurations toward fully automated, reproducible Infrastructure-as-Code (IaC) and self-healing CI/CD pipelines.
+
+- Observability Deficits: Eliminating blind spots during traffic spikes by streaming application metrics, active login indicators, and centralizing system logs.
+
+## What Retrograde Demonstrates
+To solve these real-world business and technical hurdles, Retrograde implements an enterprise-grade AWS architecture managed via Terraform and GitHub Actions:
+
+1. Global Content Acceleration: Serves the web portal through an HTTPS CloudFront CDN distribution with low-latency edge caching.
+
+2. Intelligent Traffic Routing: Routes dynamic backend API and login requests to healthy EC2 targets across subnets via an Application Load Balancer (ALB).
+
+3. Origin Access Hardening: Restricts static assets, CSS, and media in private S3 origins using CloudFront Origin Access Control (OAC) and managed AWS prefix lists.
+
+4. Reproducible & Self-Healing Infrastructure: Provisions all cloud resources using declarative Terraform scripts and self-healing GitHub Actions workflows that auto-discover security group rules without manual intervention.
+
+5. Targeted Auto-Scaling & Observability: Monitors application behavior through custom CloudWatch metrics, triggering dynamic scale-out policies during peak login traffic while streaming logs for 7-day retention.
+
+6. Cost-Controlled Demonstration Architecture: Balances high-availability design patterns with strict budget controls and AWS Free Tier boundaries.
+
+
+⚠️ Note on High Availability: This implementation demonstrates self-healing compute capabilities through auto-scaling groups and ALB target health checks. True multi-AZ fault tolerance requires distributed database backends and durable state sharing across availability zones.
+
 
 ## Application features
 
