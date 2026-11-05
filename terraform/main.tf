@@ -648,7 +648,7 @@ data "aws_iam_policy_document" "assume_role" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:YOUR_GITHUB_ORG/YOUR_REPO:*"]
+      values   = ["repo:MaxwellMensah/retrograde:*"]
     }
   }
 }
