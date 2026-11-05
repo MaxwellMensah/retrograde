@@ -4,6 +4,12 @@ variable "aws_region" {
   description = "The AWS region to deploy resources into"
 }
 
+variable "ssh_key_name" {
+  type        = string
+  description = "Name of the EC2 Key Pair to attach to instances for SSH access"
+  default     = ""
+}
+
 variable "name_prefix" {
   type        = string
   default     = "retrograde"
