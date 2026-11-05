@@ -508,38 +508,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
       metric_name = "RequestCount"
       period      = 60
       stat        = "Sum"
-      dimensions  = { LoadBalancer = aws_lb.web.arn_suffix }name: Deploy to AWS S3 & Refresh ASG
-
-on:
-  push:
-    branches: [ main, master ]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1 # Match your AWS region
-
-      - name: Upload Application Files to S3
-        run: |
-          # Replace with your actual Terraform S3 bucket name
-          aws s3 cp app.py s3://YOUR-TERRAFORM-S3-BUCKET-NAME/app.py
-          aws s3 sync static/ s3://YOUR-TERRAFORM-S3-BUCKET-NAME/static/
-          aws s3 sync templates/ s3://YOUR-TERRAFORM-S3-BUCKET-NAME/templates/
-
-      - name: Trigger Auto Scaling Group Instance Refresh
-        run: |
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name retrograde-asg \
-            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 300}'
+      dimensions  = { LoadBalancer = aws_lb.web.arn_suffix }
     }
   }
 }
