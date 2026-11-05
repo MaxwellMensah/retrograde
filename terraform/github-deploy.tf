@@ -10,7 +10,7 @@ variable "github_oidc_subject" {
   default     = ""
 }
 
-# Lets GitHub Actions request temporary AWS credentials.
+# Lets GitHub Actions request temporary AWS credentials via OIDC.
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
@@ -40,51 +40,39 @@ resource "aws_iam_role" "github_deploy" {
   })
 }
 
-# Discovery APIs require wildcard resources. Rule edits are scoped to this stack's web SG.
-resource "aws_iam_role_policy" "github_ssh_access" {
+# Grants GitHub Actions permissions to upload assets to S3 and trigger ASG Instance Refreshes
+resource "aws_iam_role_policy" "github_deploy_policy" {
   role = aws_iam_role.github_deploy.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["ec2:DescribeInstances", "ec2:DescribeSecurityGroups"]
-        Resource = "*"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:AbortMultipartUpload"
+        ]
+        Resource = [
+          "${aws_s3_bucket.static_assets.arn}",
+          "${aws_s3_bucket.static_assets.arn}/*"
+        ]
       },
       {
-        Effect   = "Allow"
-        Action   = ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"]
-        Resource = aws_security_group.web.arn
+        Effect = "Allow"
+        Action = [
+          "autoscaling:StartInstanceRefresh",
+          "autoscaling:DescribeAutoScalingGroups"
+        ]
+        Resource = "*"
       }
     ]
   })
 }
 
-# Allows EC2 to upload updated application files and assets.
-resource "aws_iam_role_policy" "deployment_assets" {
-  role = aws_iam_role.ec2_s3_reader.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = ["s3:PutObject"]
-      Resource = [
-        "${aws_s3_bucket.static_assets.arn}/app/*",
-        "${aws_s3_bucket.static_assets.arn}/static/*",
-        "${aws_s3_bucket.static_assets.arn}/images/*"
-      ]
-    }]
-  })
-}
-
 output "github_deploy_role_arn" {
   value = aws_iam_role.github_deploy.arn
-}
-
-output "github_ssh_security_group_id" {
-  value = aws_security_group.web.id
 }
 
 output "github_assets_bucket" {
