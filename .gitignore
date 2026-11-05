@@ -35,3 +35,8 @@ terraform_old/
 # Private keys
 *.pem
 *.key
+
+# test folder
+monitoring-fix/*
+problem_statement.md
+README-evidence.md
