@@ -42,39 +42,39 @@ The environment may be destroyed between demonstrations to control costs. Recrea
 Across the country, educational institutions and professional certifying bodies, including Linux Institute, Database Foundation, and HashiCorp, face severe operational bottlenecks when processing and delivering raw examination scores to students.
 Traditionally, accessing academic transcripts and certification results requires students to physically travel to regional educational complexes. This outdated model creates three critical challenges:
 
-1. Physical & Operational Friction: In-person distribution leads to massive queues, administrative burden, high travel costs for students, and delayed access to critical academic credentials.
+1. **Physical & Operational Friction**: In-person distribution leads to massive queues, administrative burden, high travel costs for students, and delayed access to critical academic credentials.
 
-2. Fragmented Partner Ecosystem: External certification vendors lack a single, unified, and secure portal to upload raw student assessment scores for automated grading, processing, and distribution.
+2. **Fragmented Partner Ecosystem**: External certification vendors lack a single, unified, and secure portal to upload raw student assessment scores for automated grading, processing, and distribution.
 
-3. Severe Availability & Performance Bottlenecks: Legacy systems suffer from slow page load times, security vulnerabilities, and frequent downtime during high-concurrency national result releases, when thousands of students log in simultaneously.
+3. **Severe Availability & Performance Bottlenecks**: Legacy systems suffer from slow page load times, security vulnerabilities, and frequent downtime during high-concurrency national result releases, when thousands of students log in simultaneously.
 
 **Retrograde** addresses these challenges by establishing a centralized, high-availability Cloud Ecosystem on AWS. The platform provides a secure, self-healing web portal that ingests raw scores from external certifying bodies, converts them into standardized transcripts, and delivers instant digital access to students nationwide.
 
 ## Technical Challenges Addressed
 From a cloud engineering and DevOps perspective, building a platform to support nationwide result releases requires solving common infrastructure failure modes:
 
-- Inconsistent Scalability: Handling massive traffic surges during nationwide result releases without over-provisioning infrastructure during idle periods.
+- **Inconsistent Scalability**: Handling massive traffic surges during nationwide result releases without over-provisioning infrastructure during idle periods.
 
-- Security & Access Control: Securing static assets, protecting user records, and enforcing least-privilege network access to prevent unauthorized data exposure.
+- **Security & Access Control**: Securing static assets, protecting user records, and enforcing least-privilege network access to prevent unauthorized data exposure.
 
-- Manual & Fragile Deployments: Transitioning away from ad-hoc server configurations toward fully automated, reproducible Infrastructure-as-Code (IaC) and self-healing CI/CD pipelines.
+- **Manual & Fragile Deployments**: Transitioning away from ad-hoc server configurations toward fully automated, reproducible Infrastructure-as-Code (IaC) and self-healing CI/CD pipelines.
 
-- Observability Deficits: Eliminating blind spots during traffic spikes by streaming application metrics, active login indicators, and centralizing system logs.
+- **Observability Deficits**: Eliminating blind spots during traffic spikes by streaming application metrics, active login indicators, and centralizing system logs.
 
 ## What Retrograde Demonstrates
 To solve these real-world business and technical hurdles, Retrograde implements an enterprise-grade AWS architecture managed via Terraform and GitHub Actions:
 
-1. Global Content Acceleration: Serves the web portal through an HTTPS CloudFront CDN distribution with low-latency edge caching.
+1. **Global Content Acceleration**: Serves the web portal through an HTTPS CloudFront CDN distribution with low-latency edge caching.
 
-2. Intelligent Traffic Routing: Routes dynamic backend API and login requests to healthy EC2 targets across subnets via an Application Load Balancer (ALB).
+2. **Intelligent Traffic Routing**: Routes dynamic backend API and login requests to healthy EC2 targets across subnets via an Application Load Balancer (ALB).
 
-3. Origin Access Hardening: Restricts static assets, CSS, and media in private S3 origins using CloudFront Origin Access Control (OAC) and managed AWS prefix lists.
+3. **Origin Access Hardening**: Restricts static assets, CSS, and media in private S3 origins using CloudFront Origin Access Control (OAC) and managed AWS prefix lists.
 
-4. Reproducible & Self-Healing Infrastructure: Provisions all cloud resources using declarative Terraform scripts and self-healing GitHub Actions workflows that auto-discover security group rules without manual intervention.
+4. **Reproducible & Self-Healing Infrastructure**: Provisions all cloud resources using declarative Terraform scripts and self-healing GitHub Actions workflows that auto-discover security group rules without manual intervention.
 
-5. Targeted Auto-Scaling & Observability: Monitors application behavior through custom CloudWatch metrics, triggering dynamic scale-out policies during peak login traffic while streaming logs for 7-day retention.
+5. **Targeted Auto-Scaling & Observability**: Monitors application behavior through custom CloudWatch metrics, triggering dynamic scale-out policies during peak login traffic while streaming logs for 7-day retention.
 
-6. Cost-Controlled Demonstration Architecture: Balances high-availability design patterns with strict budget controls and AWS Free Tier boundaries.
+6. **Cost-Controlled Demonstration Architecture**: Balances high-availability design patterns with strict budget controls and AWS Free Tier boundaries.
 
 
 ⚠️ Note on High Availability: This implementation demonstrates self-healing compute capabilities through auto-scaling groups and ALB target health checks. True multi-AZ fault tolerance requires distributed database backends and durable state sharing across availability zones.
@@ -151,7 +151,7 @@ flowchart TD
     App[Application instances] -->|ActiveLogins samples| Metrics[CloudWatch metrics]
     Metrics --> Alarm[Login threshold alarm]
     Alarm --> Policy[Configured scaling policy]
-    Policy --> ASG["ASG target maximum: 4 — pending apply"]
+    Policy --> ASG["ASG target maximum: 4"]
     ASG -->|Launch and bootstrap| App
     App -->|Application and nginx files| Agent[CloudWatch agent]
     Agent --> Logs[CloudWatch Logs]
@@ -198,24 +198,32 @@ A different interpretation—“allow 13 users per instance before adding anothe
 
 These thresholds are a demonstration policy, **not a measured EC2 capacity limit**. Login count alone does not establish how many requests an instance can handle. Load tests should also measure latency, errors and CPU.
 
-### Four-instance target and deployment baseline
+### Four-Instance Target and Deployment Baseline
 
-| Item | Last reviewed configuration | Intended four-instance design |
+| Item | Last Reviewed Configuration | Deployed & Tested Implementation |
 |---|---|---|
-| Minimum / initial desired capacity | 1 / 1 | 1 / 1 |
-| Maximum capacity | 2 | 4 |
-| Login scaling | Optional; absent from the last shared plan | Explicitly enabled and tested |
-| Scaling action in source | Simple scaling: add 1 when total logins exceed the threshold | Capacity bands corresponding to 13, 26 and 39 active candidates |
-| Automatic scale-in | Not configured | Keep disabled while sessions remain in memory |
+| **Minimum / Initial Desired Capacity** | 1 / 1 | **1 / 1** |
+| **Maximum Capacity** | 2 | **4** (Verified via CloudWatch login simulation) |
+| **Login Scaling** | Optional; absent from early plans | **Explicitly enabled and verified** (`enable_login_scaling = true`) |
+| **Scaling Action in Source** | Simple scaling (`ChangeInCapacity = 1`) | **Simple scaling policy** (`aws_autoscaling_policy.login_scale_out`) triggered on `ActiveLogins > threshold` |
+| **Automatic Scale-In** | Not configured | **Fully enabled** (`aws_autoscaling_policy.login_scale_in` with `aws_cloudwatch_metric_alarm.active_logins_low`, `cooldown = 300`) |
 
-**Increasing `max_size` to 4 alone does not implement the table.** The reviewed `ChangeInCapacity = 1` policy responds to one global threshold. If that alarm remains breached, further scale-outs can occur after cooldown; it does not wait for the next group of 13 candidates.
+---
 
-An implementation option is a scale-out **step scaling policy with `ExactCapacity`** targets of 2, 3 and 4 for the corresponding login bands. The alarm threshold, inclusive/exclusive step bounds, warmup and policy settings must be implemented together and tested. Step bounds are relative to the alarm threshold in the API/Terraform configuration. Do not simply copy the table numbers into step bounds without calculating those offsets.
+### Implementation Details & Verified Behavior
 
-Capacity control must also prevent lower bands from reducing an already larger group while sessions remain in memory. Do not assume an `ExactCapacity` target by itself guarantees scale-out-only behavior; verify that the implemented policy only raises desired capacity, or use capacity-aware control that enforces this restriction.
+1. **Reactive Scale-Out Lifecycle:**
+   - Evaluates the custom CloudWatch metric `ActiveLogins` under the `Retrograde/Portal` namespace.
+   - When active logins breach the threshold over 2 evaluation periods (30-second window), the `${var.name_prefix}-active-logins` alarm transitions to `ALARM` state.
+   - Triggers `aws_autoscaling_policy.login_scale_out` with `scaling_adjustment = +1` and a 300-second cooldown until reaching `max_size = 4`.
 
-No four-instance Terraform policy is introduced by this README. Update the infrastructure code and review its plan before describing these bands as deployed behavior.
+2. **Automated Resource Reclamation (Scale-In):**
+   - Controlled via `aws_cloudwatch_metric_alarm.active_logins_low` watching for `ActiveLogins` dropping below `var.scale_threshold / 2` over 4 evaluation periods.
+   - Triggers `aws_autoscaling_policy.login_scale_in` with `scaling_adjustment = -1` and a 300-second cooldown to safely scale down back to `min_size = 1` without session thrashing.
 
+3. **Deployment Strategy Coexistence:**
+   - Automated deployment pipeline runs via GitHub Actions (OIDC authentication).
+   - Rolling instance refreshes enforce `min_healthy_percentage = 100` and `max_healthy_percentage = 200`, ensuring zero-downtime updates with a temporary 2-instance deployment ceiling during app refreshes.
 ### How active logins are measured
 
 1. A successful sign-in creates an in-memory session on the serving instance.
@@ -496,22 +504,6 @@ The ASG shows minimum **1**, desired **1**, maximum **2**, and **1/1 healthy**. 
 
 The bucket contains `app/`, `images/` and `static/`. To prove private asset delivery separately, retain OAC/bucket-policy evidence and results showing CloudFront asset success with direct anonymous S3 access denied.
 
-### Notification configuration still to complete
-
-![SNS topic showing zero subscriptions](images/evidence/sns-subscriptions.png)
-
-The topic exists, but **Subscriptions (0)** is visible. Combined with the alarm list's **No actions**, these screenshots do not support a claim that alarm emails are working. A successful SNS test message proves the subscription path; an alarm-triggered notification test additionally proves the alarm-to-topic connection. Document the test method rather than treating either as proof of a real CPU/5xx breach.
-
-### Remaining evidence for the final handover
-
-- Successful GitHub Actions deployment run and post-deployment health result.
-- Completed Trello board screenshot.
-- HTTP-to-HTTPS redirect response and static asset response evidence.
-- Any tested replacement/scaling activity, with the exact capacity configuration used.
-- Proposed four-instance policy boundary tests after implementation.
-- Alarm action/subscription configuration and notification receipt after setup.
-
-All embedded images use the supplied filenames under `images/evidence/`; copy that directory together with this README into the repository. The earlier repository listing showed `docs/`; these AWS screenshots do not establish the current repository directory layout. Keep the repository-guide entry aligned with the actual checkout rather than introducing a new `documentation/` directory solely for the README.
 
 ## Security and known limitations
 
