@@ -137,7 +137,15 @@ jobs:
           test -n "$SSH_PRIVATE_KEY"
           test -n "$SSH_KNOWN_HOSTS"
           install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/retrograde_deploy"
+          
+          # Clean carriage returns and ensure proper formatting
+          python3 -c '
+          import os
+          key = os.environ["SSH_PRIVATE_KEY"].replace("\r\n", "\n").strip()
+          with open(os.path.expanduser("~/.ssh/retrograde_deploy"), "w") as f:
+              f.write(key + "\n")
+          '
+          
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/retrograde_deploy" "$HOME/.ssh/known_hosts"
 
