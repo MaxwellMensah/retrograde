@@ -177,6 +177,7 @@ resource "aws_iam_role_policy_attachment" "ssm_server" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+
 # ---------------------------------------------------------------------------
 # 9. Launch Template & Auto Scaling Group
 # ---------------------------------------------------------------------------
@@ -184,6 +185,7 @@ resource "aws_launch_template" "web" {
   name_prefix   = "${var.name_prefix}-lt-"
   image_id      = data.aws_ami.amazon_linux_2023.id
   instance_type = var.instance_type
+  key_name      = var.ssh_key_name != "" ? var.ssh_key_name : null
 
   network_interfaces {
     associate_public_ip_address = true
@@ -200,10 +202,12 @@ resource "aws_launch_template" "web" {
   }
 
   user_data = base64encode(templatefile("${path.module}/bootstrap.sh.tftpl", {
-    region       = var.aws_region
-    bucket       = aws_s3_bucket.static_assets.id
-    release_hash = local.release_hash
-    threshold    = var.scale_threshold
+    region         = var.aws_region
+    bucket         = aws_s3_bucket.static_assets.id
+    release_hash   = local.release_hash
+    threshold      = var.scale_threshold
+    logging_script = file("${path.module}/install-logging.sh")
+    log_group      = aws_cloudwatch_log_group.app_logs.name
   }))
 
 }
@@ -213,6 +217,7 @@ resource "aws_autoscaling_group" "web" {
   depends_on = [
     aws_iam_role_policy.s3_read_policy,
     aws_iam_role_policy.app_metrics,
+    aws_iam_role_policy.app_log_delivery,
     aws_iam_role_policy_attachment.ssm_server,
     aws_s3_object.app_py,
     aws_s3_object.requirements,
@@ -472,16 +477,40 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
 
 resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
   alarm_name          = "${var.name_prefix}-alb-5xx-errors-high"
-  alarm_description   = "ALB 5xx target error rate exceeded 5 errors"
+  alarm_description   = "Target-generated 5xx responses exceed 5% of routed requests over 60 seconds. Does not include ALB-generated errors."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  metric_name         = "HTTPCode_Target_5XX_Count"
-  namespace           = "AWS/ApplicationELB"
-  period              = 60
-  statistic           = "Sum"
   threshold           = 5
   treat_missing_data  = "notBreaching"
-  dimensions          = { LoadBalancer = aws_lb.web.arn_suffix }
+
+  metric_query {
+    id          = "error_rate"
+    expression  = "IF(requests > 0, 100 * FILL(errors, 0) / requests, 0)"
+    label       = "Target 5xx error rate (%)"
+    return_data = true
+  }
+  metric_query {
+    id          = "errors"
+    return_data = false
+    metric {
+      namespace   = "AWS/ApplicationELB"
+      metric_name = "HTTPCode_Target_5XX_Count"
+      period      = 60
+      stat        = "Sum"
+      dimensions  = { LoadBalancer = aws_lb.web.arn_suffix }
+    }
+  }
+  metric_query {
+    id          = "requests"
+    return_data = false
+    metric {
+      namespace   = "AWS/ApplicationELB"
+      metric_name = "RequestCount"
+      period      = 60
+      stat        = "Sum"
+      dimensions  = { LoadBalancer = aws_lb.web.arn_suffix }
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -601,4 +630,30 @@ resource "aws_cloudwatch_metric_alarm" "active_logins" {
   threshold           = var.scale_threshold
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_autoscaling_policy.login_scale_out[0].arn]
+}
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC IAM Role
+# ---------------------------------------------------------------------------
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect  = "Allow"
+
+    principals {
+      type        = "Federated"
+      identifiers = ["arn:aws:iam::351495784406:oidc-provider/token.actions.githubusercontent.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:YOUR_GITHUB_ORG/YOUR_REPO:*"]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_deploy" {
+  name               = "retrograde-github-deploy"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
