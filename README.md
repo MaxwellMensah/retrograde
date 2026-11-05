@@ -4,9 +4,9 @@ Retrograde is a demonstration academic performance portal built with **FastAPI**
 
 The cloud deployment demonstrates HTTPS delivery through CloudFront, load balancing, instance health recovery, private static-asset storage, GitHub Actions deployment and centralized application logging. Its next scaling objective is to accommodate **up to 41 concurrent active candidates**, with **a maximum of four application instances** under the policy described below.
 
-> **Deployment status:** application log delivery was verified on 5 November 2026, and the project owner reports that the remaining deployment tests passed. The AWS console screenshots captured on 5 November 2026 confirm one healthy instance, ASG minimum/desired capacity of 1 and maximum of 2. The alarm list shows no actions, and the shown SNS topic has no subscriptions; alarm notification delivery is not configured through that path. The four-instance scaling policy in this README is a proposed configuration, not a claim that it has already been deployed or tested.
->
-> **Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
+
+**Use synthetic data only.** This is an educational portal. The reviewed backend uses demonstration identity checks and in-memory sessions; its grades endpoint needs session authorization before use with private student records.
+
 
 - **Repository:** [MaxwellMensah/retrograde](https://github.com/MaxwellMensah/retrograde)
 - **Latest demonstrated URL:** [Open Retrograde](https://d26dnowt2i27ho.cloudfront.net/)
