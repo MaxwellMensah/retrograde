@@ -92,7 +92,6 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$EC2_HOST"
-          test -n "$EC2_SSH_SG_ID"
           test -n "$ROLE_ARN"
           bash -n scripts/deploy.sh scripts/deploy-remote.sh
 
@@ -120,13 +119,28 @@ jobs:
         id: ingress
         run: |
           set -euo pipefail
+          
+          # Auto-discover or validate EC2_SSH_SG_ID so stale IDs never break deployment
+          SG_ID="${EC2_SSH_SG_ID:-}"
+          if [ -z "$SG_ID" ] || ! aws ec2 describe-security-groups --group-ids "$SG_ID" >/dev/null 2>&1; then
+            echo "Configured EC2_SSH_SG_ID is empty or stale. Discovering web security group automatically..."
+            SG_ID=$(aws ec2 describe-security-groups \
+              --filters "Name=group-name,Values=*-web-sg" \
+              --query "SecurityGroups[0].GroupId" \
+              --output text)
+            echo "Discovered active Security Group ID: $SG_ID"
+          fi
+
           RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
           python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
+          
           RULE_ID=$(aws ec2 authorize-security-group-ingress \
-            --group-id "$EC2_SSH_SG_ID" \
+            --group-id "$SG_ID" \
             --protocol tcp --port 22 --cidr "$RUNNER_IP/32" \
             --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text)
+          
           echo "rule_id=$RULE_ID" >> "$GITHUB_OUTPUT"
+          echo "sg_id=$SG_ID" >> "$GITHUB_OUTPUT"
 
       - name: Prepare verified SSH credentials
         env:
@@ -145,7 +159,6 @@ jobs:
               print("Error: SSH_PRIVATE_KEY is empty!")
               sys.exit(1)
           
-          # Clean Windows line endings and trim whitespace/accidental quotes
           key = raw_key.replace("\r\n", "\n").strip()
           if key.startswith("\"") and key.endswith("\""):
               key = key[1:-1].strip()
@@ -159,7 +172,6 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/retrograde_deploy" "$HOME/.ssh/known_hosts"
 
-
       - name: SSH into EC2 and pull latest main
         env:
           GH_READ_TOKEN: ${{ github.token }}
@@ -169,9 +181,10 @@ jobs:
         if: always() && steps.ingress.outputs.rule_id != ''
         env:
           RULE_ID: ${{ steps.ingress.outputs.rule_id }}
+          SG_ID: ${{ steps.ingress.outputs.sg_id }}
         run: |
           aws ec2 revoke-security-group-ingress \
-            --group-id "$EC2_SSH_SG_ID" --security-group-rule-ids "$RULE_ID"
+            --group-id "${SG_ID:-$EC2_SSH_SG_ID}" --security-group-rule-ids "$RULE_ID"
 
       - name: Delete runner SSH key
         if: always()
