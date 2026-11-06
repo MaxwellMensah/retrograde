@@ -81,6 +81,15 @@ jobs:
         with:
           persist-credentials: false
 
+      
+      - name: Debug OIDC claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+            core.info(JSON.stringify({ sub: claims.sub, aud: claims.aud, iss: claims.iss }, null, 2));
+            
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
