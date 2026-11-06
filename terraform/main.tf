@@ -661,7 +661,7 @@ resource "aws_cloudwatch_metric_alarm" "active_logins_low" {
   period              = 30
   evaluation_periods  = 4
   comparison_operator = "LessThanThreshold"
-  threshold           = var.scale_threshold / 2  # drops below half your peak threshold
+  threshold           = var.scale_threshold / 2 # drops below half your peak threshold
   treat_missing_data  = "breaching"
   alarm_actions       = [aws_autoscaling_policy.login_scale_in[0].arn]
 }
